@@ -1,0 +1,3482 @@
+$global:repertoire_initial = ""
+
+
+function deplacementuser
+{
+	param (
+		
+		[Parameter(Mandatory = $true, Position = 0)]
+		[string]$fichiercsv,
+		[Parameter(Mandatory = $true, Position = 0)]
+		$session
+	)
+	$CSVFile = $fichiercsv
+	$CSV = Import-Csv -LiteralPath "$CSVFile" -Delimiter ";"
+	
+	$s = $session
+	
+	if ($s -eq "vide")
+	{
+		
+		#/////////////////////////////////////
+		#
+		#   DEPLACEMENT DES USERS CREES EN IMPORT AUTO VERS OU TEMPORAIRE
+		#
+		#////////////////////////////////////
+		
+		
+		Add-Output -Text "ETAPE 2 DEPLACEMENT DES USERS CREES EN IMPORT AUTO VERS OU TEMPORAIRE" -Header
+		
+		try
+		{
+			
+			$listeolduser = Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve -Properties givenname, surname, SamAccountName, Description, POBox, manager, profilepath, DistinguishedName, office, title | Select-Object givenname, surname, SamAccountName, Description, POBox, manager, profilepath, DistinguishedName, office, title
+			$nb_user_liste = (Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve).Count
+			if (($nb_user_liste -eq 0) -or ($nb_user_liste -eq $null))
+			{
+				$progressbarancienuser.Maximum = 1
+			}
+			else
+			{
+				$progressbarancienuser.Maximum = $nb_user_liste
+			}
+			$progressbarancienuser.Visible = $true
+			$labelDéplacementDesAncien.Visible = $true
+			
+			$progressbarancienuser.Step = 1
+			$progressbarancienuser.Value = 0
+			$listeolduser | export-csv $sauve_nettoyage_user_eleves -Delimiter ';' -NoTypeInformation -Encoding UTF8
+			$listeolduser | export-csv $sauve_nettoyage_user_eleves_archive -Delimiter ';' -NoTypeInformation -Encoding UTF8
+			
+			
+			ForEach ($Item in $listeolduser)
+			{
+				[System.Windows.Forms.Application]::DoEvents()
+				$progressbarancienuser.PerformStep()
+				$usertrouve = Select-String $CSVFile -Pattern $($Item.'SamAccountName')
+				
+				if ($usertrouve -eq $null)
+				{
+					
+					
+					if ($($Item.'manager') -eq "CN=Import Automatique,CN=Users,$OU_base")
+					{
+						
+						$utilisateur_deplace = "1"
+						# On récupère tous les groupes auquel appartient l'utilisateur
+						$groups = get-adprincipalgroupmembership $($item.'SamAccountName');
+						
+						
+						#nettoyage des scripts de connexion
+						$chemin_old_fichierbat = "$netlogon$($item.'SamAccountName').bat"
+						Move-Item -Path $chemin_old_fichierbat -Destination $rep_ancien_scripts_utilisateur -Force
+						
+						
+						# Boucle sur l'ensemble des groupes
+						foreach ($group in $groups)
+						{
+							
+							# On exclue utilisateurs du domaine
+							if ($group.name -ne "Utilisateurs du domaine")
+							{
+								
+								# On enlève l'utilisateur des groupes listés
+								remove-adgroupmember -Identity $($group.name) -Members $item.'SamAccountName' -Confirm:$false;
+								
+							}
+						}
+						
+						# Déplace l'utilisateur dans l'OU temporaire
+						Move-ADObject -Identity $($Item.'DistinguishedName') -TargetPath "OU=$OU_TEMP,$OU_base"
+						
+						# enleve l'utilisateur impor auto 
+						
+						Set-ADuser -Identity $($item.'SamAccountName') -clear Manager
+						Add-Output -Text "L'utilisateur $($Item.'SamAccountName') est déplacé dans l'OU temporaire" -Color Magenta
+						
+						# Suppression du partage  et déplacement dans ancien
+						Remove-SmbShare -Name "$($item.'SamAccountName')" -Force
+						if ($($item.'title') -eq "$nom_professeurs" -or $($item.'title') -eq "$nom_administratifs")
+						{
+							$ancienrepperso = "$rep_perso_base\$($item.'title')\$($item.'SamAccountName')"
+							$nouveaureperso = "$rep_ancien\$($item.'title')\"
+						}
+						elseif ($($item.'title') -eq "$nom_eleves")
+						{
+							$ancienrepperso = "$rep_perso_base\$nom_eleves\$($item.'office')\$($item.'SamAccountName')"
+							$nouveaureperso = "$rep_ancien\$nom_eleves\"
+						}
+						
+						Remove-FsrmQuota -Path $ancienrepperso -Confirm:$false
+						if (-not (Test-Path -Path $nouveaureperso))
+						{
+							New-Item -Path $nouveaureperso -ItemType Directory
+						}
+						
+						Move-Item -Path $ancienrepperso -Destination $nouveaureperso -Force
+					}
+				}
+				
+			}
+		}
+		catch
+		{
+			
+			Add-Output -Text "$error[0].Exception.Message" -color Red
+		}
+		
+		
+		if (-not ($utilisateur_deplace -eq "1"))
+		{
+			Add-Output -Text "Aucun utilisateur à déplacer" -Color Green
+			$progressbarancienuser.PerformStep()
+			
+		}
+		
+		$listeolduser = Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve -Properties givenname, surname, POBox, SamAccountName, title, office, streetAddress, employeeid, division, manager, profilepath, DistinguishedName | Select-Object givenname, surname, POBox, SamAccountName, title, office, streetAddress, employeeid, division, manager, profilepath, DistinguishedName
+		$listeolduser | export-csv $sauve_nettoyage_user_eleves -Delimiter ';' -NoTypeInformation -Encoding UTF8
+		
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace '"')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'givenname', 'PRENOM')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'surname', 'NOM')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'POBox', 'DATE NAISSANCE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'SamAccountName', 'LOGIN')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'title', 'GROUPE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'office', 'CLASSE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'streetAddress', 'OPTIONS')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'employeeid', 'MOT DE PASSE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'division', 'MATIERE')
+		
+		
+	}
+	else
+	{
+		
+		
+		#/////////////////////////////////////
+		#
+		#   DEPLACEMENT DES USERS CREES EN IMPORT AUTO VERS OU TEMPORAIRE
+		#
+		#////////////////////////////////////
+		
+		
+		Add-Output -Text "ETAPE 2 DEPLACEMENT DES USERS CREES EN IMPORT AUTO VERS OU TEMPORAIRE" -Header
+		
+		try
+		{
+			$listeolduser = Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve -Properties givenname, surname, SamAccountName, Description, POBox, manager, profilepath, DistinguishedName, office, title | Select-Object givenname, surname, SamAccountName, Description, POBox, manager, profilepath, DistinguishedName, office, title
+			$nb_user_liste = (Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve).Count
+			if (($nb_user_liste -eq 0) -or ($nb_user_liste -eq $null))
+			{
+				$progressbarancienuser.Maximum = 1
+			}
+			else
+			{
+				$progressbarancienuser.Maximum = $nb_user_liste
+			}
+			$progressbarancienuser.Visible = $true
+			$labelDéplacementDesAncien.Visible = $true
+			$progressbarancienuser.Step = 1
+			$progressbarancienuser.Value = 0
+			$listeolduser | export-csv $sauve_nettoyage_user_eleves -Delimiter ';' -NoTypeInformation -Encoding UTF8
+			$listeolduser | export-csv $sauve_nettoyage_user_eleves_archive -Delimiter ';' -NoTypeInformation -Encoding UTF8
+			
+			
+			ForEach ($Item in $listeolduser)
+			{
+				[System.Windows.Forms.Application]::DoEvents()
+				$progressbarancienuser.PerformStep()
+				$usertrouve = Select-String $CSVFile -Pattern $($Item.'SamAccountName')
+				
+				if ($usertrouve -eq $null)
+				{
+					
+					
+					if ($($Item.'manager') -eq "CN=Import Automatique,CN=Users,$OU_base")
+					{
+						
+						$utilisateur_deplace = "1"
+						# On récupère tous les groupes auquel appartient l'utilisateur
+						$groups = get-adprincipalgroupmembership $($item.'SamAccountName');
+						
+						
+						#nettoyage des scripts de connexion
+						$chemin_old_fichierbat = "$netlogon$($item.'SamAccountName').bat"
+						Move-Item -Path $chemin_old_fichierbat -Destination $rep_ancien_scripts_utilisateur -Force
+						
+						
+						# Boucle sur l'ensemble des groupes
+						foreach ($group in $groups)
+						{
+							
+							# On exclue utilisateurs du domaine
+							if ($group.name -ne "Utilisateurs du domaine")
+							{
+								
+								# On enlève l'utilisateur des groupes listés
+								remove-adgroupmember -Identity $group.name -Members $item.'SamAccountName' -Confirm:$false;
+								
+							}
+						}
+						
+						# Déplace l'utilisateur dans l'OU temporaire
+						Move-ADObject -Identity $($Item.'DistinguishedName') -TargetPath "OU=$OU_TEMP,$OU_base"
+						
+						# enleve l'utilisateur impor auto 
+						Set-ADuser -Identity $($item.'SamAccountName') -clear Manager
+						Add-Output -Text "L'utilisateur $($Item.'SamAccountName') est déplacé dans l'OU temporaire" -Color blue
+						
+						# Suppression du partage  et déplacement dans ancien
+						Remove-SmbShare -Name "$($item.'SamAccountName')" -Force
+						$samaccount = $($item.'SamAccountName')
+						Invoke-Command -Session $s {
+							Remove-SmbShare -Name $using:samaccount -Force
+						}
+						if ($($item.'title') -eq "$nom_professeurs" -or $($item.'title') -eq "$nom_administratifs")
+						{
+							$ancienrepperso = "$rep_perso_base\$($item.'title')\$($item.'SamAccountName')"
+							$nouveaureperso = "$rep_ancien\$($item.'title')\"
+						}
+						elseif ($($item.'title') -eq "$nom_eleves")
+						{
+							$ancienrepperso = "$rep_perso_base\$nom_eleves\$($item.'office')\$($item.'SamAccountName')"
+							$nouveaureperso = "$rep_ancien\$nom_eleves\"
+						}
+						
+						Remove-FsrmQuota -Path $ancienrepperso -Confirm:$false
+						if (-not (Test-Path -Path $nouveaureperso))
+						{
+							New-Item -Path $nouveaureperso -ItemType Directory
+						}
+						
+						
+						Move-Item -Path $ancienrepperso -Destination $nouveaureperso -Force
+						Invoke-Command -Session $s {
+							Remove-FsrmQuota -Path $using:ancienrepperso -Confirm:$false
+							if (-not (Test-Path -Path $using:nouveaureperso))
+							{
+								New-Item -Path $using:nouveaureperso -ItemType Directory
+							}
+							Move-Item -Path $using:ancienrepperso -Destination $using:nouveaureperso -Force
+						}
+					}
+				}
+				
+			}
+		}
+		catch
+		{
+			
+			Add-Output -Text "$error[0].Exception.Message" -Color red
+		}
+		
+		
+		if (-not ($utilisateur_deplace -eq "1"))
+		{
+			Add-Output -Text "Aucun utilisateur à déplacer" -Color green
+			$progressbarancienuser.Value = $nb_user_liste
+		}
+		
+		$listeolduser = Get-ADUser -Filter * -SearchBase $ou_utilisateur_base_eleve -Properties givenname, surname, POBox, SamAccountName, title, office, streetAddress, employeeid, division, manager, profilepath, DistinguishedName | Select-Object givenname, surname, POBox, SamAccountName, title, office, streetAddress, employeeid, division, manager, profilepath, DistinguishedName
+		$listeolduser | export-csv $sauve_nettoyage_user_eleves -Delimiter ';' -NoTypeInformation -Encoding UTF8
+		
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace '"')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'givenname', 'PRENOM')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'surname', 'NOM')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'POBox', 'DATE NAISSANCE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'SamAccountName', 'LOGIN')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'title', 'GROUPE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'office', 'CLASSE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'streetAddress', 'OPTIONS')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'employeeid', 'MOT DE PASSE')
+		set-content "$sauve_nettoyage_user_eleves" ((get-content "$sauve_nettoyage_user_eleves") -replace 'division', 'MATIERE')
+		
+	}
+}
+
+function creationOU
+{
+	param (
+		
+		[Parameter(Mandatory = $true, Position = 0)]
+		[string]$fichiercsvconverti
+	)
+	
+	# Récupère le chemin du fichier
+	
+	$CSV = Import-Csv -LiteralPath "$fichiercsvconverti" -Delimiter ";" -Encoding UTF8
+	$nb_user = (Get-Content $fichiercsvconverti).Length
+	$labelCréationDesOU.Visible = $true
+	$progressbarou.Visible = $true
+	$progressbarou.Maximum = $nb_user
+	$progressbarou.Step = 1
+	$progressbarou.Value = 0
+	
+	#/////////////////////////////////////
+	#
+	#   CREATION DES OU DES UTILISATEURS
+	#
+	#////////////////////////////////////
+	
+	Add-Output -Text "ETAPE 3 CREATION DES OU DES CLASSES" -Header
+	
+	ForEach ($OU in $CSV)
+	{
+		[System.Windows.Forms.Application]::DoEvents()
+		$OUName = $OU.'classe'
+		
+		try
+		{
+			
+			#Récupère le nom de l'OU et le chemin
+			
+			if ($OU.'classe' -ne "")
+			{
+				
+				
+				$test_OU = Get-ADOrganizationalUnit -Filter 'Name -eq $OUName'
+				if ($test_OU -eq $NULL)
+				{
+					#Créé l'OU
+					New-ADOrganizationalUnit -Name "$OUName" -Path "$OU_utilisateur_base_eleve" -ProtectedFromAccidentalDeletion $true -ManagedBy "Importautomatique"
+					
+					#Affiche la confirmation
+					Add-Output -Text "L'OU $OUName a été créée" -Color green
+					$OU_classe_cree = "1"
+					
+				}
+				else
+				{
+					$OUName = $OU.'groupe'
+					$test_OU = Get-ADOrganizationalUnit -Filter 'Name -eq $OUName'
+					if ($test_OU -eq $NULL)
+					{
+						#Créé l'OU
+						New-ADOrganizationalUnit -Name "$OUName" -Path "$OU_utilisateur_base" -ProtectedFromAccidentalDeletion $true -ManagedBy "Importautomatique"
+						
+						#Affiche la confirmation
+						Add-Output -Text "L'OU $OUName a été créée" -Color green
+						$OU_classe_cree = "1"
+					}
+				}
+			}
+			$progressbarou.PerformStep()
+		}
+		
+		
+		catch
+		{
+			
+			Add-Output -Text $error[0].Exception.Message -Color Red
+		}
+	}
+	
+	if (-not ($OU_classe_cree -eq "1"))
+	{
+		Add-Output -Text "Toutes les OU sont déjà existantes rien à faire" -Color green
+		$progressbarou.value = $nb_user
+	}
+}
+
+
+
+
+function importationcsv
+{
+	param (
+		
+		[Parameter(Mandatory = $true, Position = 0)]
+		[string]$fichiercsv,
+		[Parameter(Mandatory = $true, Position = 0)]
+		$session
+	)
+	
+	$s = $session
+	Start-Transcript -Path $retour_import
+	$CSVFile = $fichiercsv
+	$CSV = Import-Csv -LiteralPath "$CSVFile" -Delimiter ";" -Encoding UTF8
+	$nb_user = (Get-Content $CSVFile).Length
+	$labelImportationDesCompte.visible = $true
+	$progressbarimportation.Visible = $true
+	$progressbarimportation.Maximum = $nb_user
+	$progressbarimportation.Step = 1
+	$progressbarimportation.Value = 0
+	$sideleves = ([Security2.IdentityReference2]$nom_eleves).Sid
+	
+	if ($s -eq "vide")
+	{
+		# Récupère le chemin du fichier
+		
+		
+		
+		#/////////////////////////////////////
+		#
+		#   CREATION DES UTILISATEURS
+		#
+		#////////////////////////////////////
+		
+		
+		Add-Output -Text "ETAPE 4 CREATION DES UTILISATEURS" -Header
+		
+		$OLD_CSV = Import-Csv -LiteralPath "$sauve_nettoyage_user_eleves" -Delimiter ";"
+		
+		try
+		{
+			
+			New-Item -ItemType File -Path $pathexporteleveCSV -force
+			Add-Content -Path $pathexporteleveCSV -Value "NOM_DE_FAMILLE;PRENOM;LOGIN;MOT_DE_PASSE;CLASSE" -Encoding UTF8
+			
+			
+			# Parcours ligne par ligne le fichier
+			foreach ($user in $CSV)
+			{
+				[System.Windows.Forms.Application]::DoEvents()
+				# Création des groupes d'utilisateurs correspondants aux options
+				if ($($user.'Options') -ne "")
+				{
+					$($user.'Options').Split(",") | ForEach {
+						try { $Group_option_Exists = Get-ADGroup -Filter 'Name -eq $_' -ErrorAction Continue }
+						catch { }
+						if ($Group_option_Exists -eq $NULL)
+						{
+							New-ADGroup -Name $_ -Path $OU_groupe_options -Description "Groupe des personnes faisant partie de l'option $_" -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de l'option
+							Add-Output -Text "Création du groupe de l'option $_" -Color Green
+						}
+						if (-not (Test-Path variable:"$($_)_var"))
+						{
+							New-Variable -Name "$($_)_var"
+							
+							$Path = "$rep_options\$_"
+							$path_ress = "$rep_options\$_\ressources"
+							$path_travail = "$rep_options\$_\travail"
+							if (Test-Path -Path $Path)
+							{
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions0
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$_", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "Option-$_" -ea 0))
+								{
+									New-SMBShare -Name "Option-$_" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage option-$_" -color green
+								}
+								if ($((Get-Variable -Name "$($_)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage option-$_" -color green
+									set-variable -Name "$($_)_var" -Value "1"
+								}
+								Get-Item $path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles,Write,Delete -AccessType Deny
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+								
+							}
+							else
+							{
+								
+								Add-Output -Text "Création du répertoire $path" -color green
+								# create new folder
+								New-Item -Path $Path -ItemType Directory
+								New-Item -Path $path_ress -ItemType Directory
+								New-Item -Path $path_travail -ItemType Directory
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$_", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "Option-$_" -ea 0))
+								{
+									New-SMBShare -Name "Option-$_" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage option-$_" -color green
+								}
+								if ($((Get-Variable -Name "$($_)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage option-$_" -color green
+									set-variable -Name "$($_)_var" -Value "1"
+								}
+								Get-Item $path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles,Write,Delete -AccessType Deny
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+							}
+							
+						}
+					}
+				}
+				
+				
+				
+				# Création des groupes d'utilisateurs correspondants aux classes
+				if ($($user.'classe') -ne "")
+				{
+					if ($($user.'classe') -ne $null)
+					{
+						$classe = $($user.'classe')
+						try
+						{
+							$Group_classe_Exists = Get-ADGroup -Filter 'Name -eq $classe' -ErrorAction Continue
+						}
+						catch { }
+						if ($Group_classe_Exists -eq $NULL)
+						{
+							New-ADGroup -Name $classe -Path $OU_groupe_classes -Description "Groupe des personnes faisant partie de la classe $classe" -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							
+							# On affiche la création de classe
+							Add-Output -Text "Création du groupe de classe $classe" -color Green
+						}
+						try
+						{
+							$testgroupeprofclasse = "Professeurs-$classe"
+							$GroupExists_profclasse = Get-ADGroup -Filter 'Name -eq $testgroupeprofclasse'
+						}
+						catch { }
+						if ($GroupExists_profclasse -eq $null)
+						{
+							New-ADGroup -Name "Professeurs-$classe" -Path $OU_professeur_classes -Description "Groupe des professeurs de la classe $classe " -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de classe
+							Add-Output -Text "Création du groupe de professeur de la classe $classe" -color Green
+						}
+						
+						if (-not (Test-Path variable:"$($classe)_var"))
+						{
+							New-Variable -Name "$($classe)_var"
+							$Path = "$rep_classes\$classe"
+							$path_ress = "$rep_classes\$classe\ressources"
+							$path_travail = "$rep_classes\$classe\travail"
+							$path_eleves = "$rep_classes\$classe\élèves"
+							
+							
+							if (Test-Path -Path $Path)
+							{
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions0
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$classe", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "classe-$classe" -ea 0))
+								{
+									New-SMBShare -Name "classe-$classe" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage classe-$classe" -color green
+								}
+								if ($((Get-Variable -Name "$($classe)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage classe-$classe" -color green
+									set-variable -Name "$($classe)_var" -Value "1"
+								}
+								Get-Item $path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles,Write,Delete -AccessType Deny
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+								Get-Item $path_eleves | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_eleves -Account $sideleves -AccessRights FullControl -AccessType Deny
+								
+							}
+							else
+							{
+								
+								Add-Output -Text "Création du répertoire $path" -color green
+								# create new folder
+								New-Item -Path $Path -ItemType Directory
+								New-Item -Path $path_ress -ItemType Directory
+								New-Item -Path $path_travail -ItemType Directory
+								New-Item -Path $path_eleves -ItemType Directory
+								
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$classe", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "classe-$classe" -ea 0))
+								{
+									New-SMBShare -Name "classe-$classe" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage classe-$classe" -color green
+								}
+								if ($((Get-Variable -Name "$($classe)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage classe-$classe" -color green
+									set-variable -Name "$($classe)_var" -Value "1"
+								}
+								Get-Item $path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles,Write,Delete -AccessType Deny
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+								Get-Item $path_eleves | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_eleves -Account $sideleves -AccessRights FullControl -AccessType Deny
+							}
+							
+							
+						}
+					}
+				}
+				
+				
+				
+				# attribution de la variable username
+				$username = "$($user.'login')"
+				
+				#Attribution dy type de l'utilisateur
+				$type_utilisateur = "$($user.'groupe')"
+				
+				$nom_affiche = "$($user.'Prenom') $($user.'nom')"
+				
+				#Permet de tester si l'utilisateur existe déjà dans l'AD
+				$ExistingADUser = Get-ADUser -Filter "SamAccountName -eq '$($user.'login')'"
+				
+				
+				# Attribution des variables en fonction des types utilisateurs
+				
+				if ($type_utilisateur -eq "$nom_eleves")
+				{
+					$line = $user.'Nom' + ";" + $user.'prenom' + ";" + $user.'login' + ";" + $user.'mot de passe' + ";" + $user.'classe'
+					if ($profil -eq "obligatoire")
+					{
+						$profil_user = "$rep_profils\$nom_eleves"
+					}
+					elseif ($profil -eq "itinerant")
+					{
+						$profil_user = "$rep_profils_it\$($user.'login')"
+					}
+					elseif ($profil -eq "local")
+					{
+						$profil_user = ""
+					}
+					$OU_utilisateur_newad = "$($user.'classe'),OU=$OU_classes"
+					$repertoire_perso = "$rep_perso_base\$nom_eleves\$($user.'classe')"
+					$description_utilisateur = "Compte élève de la classe $($user.'classe')"
+					$classe = $($user.'classe')
+					$template_quota = $template_quota_eleve
+					$taille_quota = $quota_eleve
+					Add-Content -Path $pathexporteleveCSV -Value $line
+					
+					
+				}
+				
+				# Creation de la variable du fichier script
+				$chemin_fichierbat = "$netlogon$($user.'login').bat"
+				$fichierbat = "$($user.'login').bat"
+				
+				#repertoire perso
+				$new_rep_perso = "$repertoire_perso\$($user.'login')"
+				$path_DL = "$new_rep_perso\Telechargements"
+				$path_prive = "$new_rep_perso\Privé"
+				
+				# Si l'utilisateur n'existe pas alors on le créé
+				if ($null -eq $ExistingADUser)
+				{
+					if ($User.'classe' -ne "")
+					{
+						if ($User.'classe' -ne $null)
+						{
+							# Création de la variable du mot de passe
+							$mdp = "$($user.'mot de passe')"
+							
+							if ($profil -eq "local")
+							{
+								# On créé l'utilisateur
+								New-ADUser -Name $user.'login' `
+										   -GivenName $user.'Prenom' `
+										   -Surname $user.'Nom' `
+										   -displayname $nom_affiche `
+										   -UserPrincipalName $user.'login'`
+										   -SamAccountName $user.'login' `
+										   -Description $description_utilisateur `
+										   -Path "OU=$OU_utilisateur_newad,$OU_utilisateur_base" `
+										   -AccountPassword (ConvertTo-SecureString $mdp -AsPlainText -Force) `
+										   -ChangePasswordAtLogon $true `
+										   -Enabled $true `
+										   -POBox $user.'date naissance' `
+										   -Manager "Importautomatique" `
+										   -title $type_utilisateur `
+										   -office $classe `
+										   -scriptPath $fichierbat `
+										   -streetAddress $($user.'options') `
+										   -division $user.'matiere'`
+										   -EmployeeID $mdp
+							}
+							else
+							{
+								New-ADUser -Name $user.'login' `
+										   -GivenName $user.'Prenom' `
+										   -Surname $user.'Nom' `
+										   -displayname $nom_affiche `
+										   -UserPrincipalName $user.'login'`
+										   -SamAccountName $user.'login' `
+										   -Description $description_utilisateur `
+										   -Path "OU=$OU_utilisateur_newad,$OU_utilisateur_base" `
+										   -AccountPassword (ConvertTo-SecureString $mdp -AsPlainText -Force) `
+										   -ChangePasswordAtLogon $true `
+										   -Enabled $true `
+										   -POBox $user.'date naissance' `
+										   -Manager "Importautomatique" `
+										   -profilePath $profil_user `
+										   -title $type_utilisateur `
+										   -office $classe `
+										   -scriptPath $fichierbat `
+										   -streetAddress $($user.'options') `
+										   -division $user.'matiere'`
+										   -EmployeeID $mdp
+								
+							}
+							
+							#ajout du groupe de base 
+							Add-ADGroupMember -Identity $type_utilisateur -Members $user.'login'
+							
+							# On affiche la création de l'utilisateur
+							Add-Output -Text "Création de l'utilisateur $Username" -Color magenta
+							
+							
+							if (-not (Test-Path -Path $new_rep_perso))
+							{
+								Add-Output -Text "Création du répertoire $new_rep_perso" -Color green
+								# create new folder
+								New-Item -Path $new_rep_perso -ItemType Directory
+								New-Item -Path $path_DL -ItemType Directory
+								New-Item -Path $path_prive -ItemType Directory
+								
+								Add-Output -Text "Application du quota : $template_quota" -Color green
+								new-FsrmQuota -Path $new_rep_perso -description "$template_quota" -template "$template_quota" #-Size $taille_quota
+								#reset-FsrmQuota -Path $new_rep_perso -template "$template_quota" -Confirm:$false
+								
+
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $new_rep_perso
+								
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_user, $regle_prof_classe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $new_rep_perso
+								
+								
+								$acl_DL = Get-Acl $path_DL
+								$acl_DL.SetAccessRuleProtection($true, $false)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "Allow")
+								$acl_DL.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Delete", "Deny")
+								$acl_DL.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+								$acl_DL.SetAccessRule($Ar)
+								Set-Acl $path_DL $acl_DL
+								
+								$acl_prive = Get-Acl $path_prive
+								$acl_prive.SetAccessRuleProtection($true, $false)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "Allow")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Delete", "Deny")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($nom_professeurs), "Read", "Deny")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+								$acl_prive.SetAccessRule($Ar)
+								Set-Acl $path_prive $acl_prive
+								
+								# créé le partage
+								New-SMBShare -Name "$($user.'login')" -Path $new_rep_perso -FullAccess "Tout le monde" -ea 0
+								
+								Copy-Item "$ScriptDirectory\config\Desktopini\desktop.ini" -destination $new_rep_perso -Force
+								$Pathini = "$new_rep_perso\desktop.ini"
+								Get-Item $Pathini | Disable-NTFSAccessInheritance
+								$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+								Remove-NTFSAccess -path $Pathini -Account $siduser -AccessRights Modify, Synchronize
+								Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+								
+
+							}
+							
+							
+							
+							
+							# On teste si l'utilisateur à des options et on les attribue
+							if ($User.'Options' -ne "")
+							{
+								if ($User.'Options' -ne $null)
+								{
+									
+									$rep_options_perso = "$new_rep_perso\groupes\"
+									$User.'Options'.Split(",") | ForEach {
+										Add-ADGroupMember -Identity $_ -Members $user.'login'
+										Add-Output -Text "Ajout de l'utilisateur $Username au groupe $_ " -color green # affiche l'attribution du groupe
+										if (-not (Test-Path -Path $rep_options_perso))
+										{
+											New-Item -Path $rep_options_perso -ItemType Directory -Force
+											$Folder = Get-Item  $rep_options_perso
+											$Folder.Attributes += 'ReadOnly'
+											attrib -h $rep_options_perso
+										}
+										else { attrib -h $rep_options_perso }
+										
+										if (-not (test-path "$rep_options_perso$_.lnk"))
+										{
+											$objShell = New-Object -ComObject WScript.Shell
+											$lnk = $objShell.CreateShortcut("$rep_options_perso$_.lnk")
+											$lnk.TargetPath = "\\$nom_serveur\option-$_"
+											$lnk.Save()
+										}
+										
+									}
+									$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+									Get-Item $rep_options_perso | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Modify, Synchronize
+									add-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Read
+									
+								}
+								
+							}
+							
+							# On teste si l'utilisateur à une classe et on l attribue
+							if ($User.'classe' -ne "")
+							{
+								if ($User.'classe' -ne $null)
+								{
+									$classe = $user.'classe'
+									
+									Add-ADGroupMember -Identity $classe -Members $user.'login'
+									Add-Output -Text "Ajout de l'utilisateur $Username au groupe $classe " -color green # affiche l'attribution du groupe
+									
+									if (-not (test-path "$($new_rep_perso)\classe-$classe.lnk"))
+									{
+										$objShell = New-Object -ComObject WScript.Shell
+										$lnk = $objShell.CreateShortcut("$($new_rep_perso)\classe-$classe.lnk")
+										$lnk.TargetPath = "\\$nom_serveur\classe-$classe"
+										$lnk.Save()
+									}
+									
+									if (-not (test-path "$($path_eleves)\$($user.'login').lnk"))
+									{
+										$objShell = New-Object -ComObject WScript.Shell
+										$lnk = $objShell.CreateShortcut("$($path_eleves)\$($user.'login').lnk")
+										$lnk.TargetPath = "\\$nom_serveur\$($user.'login')"
+										$lnk.Save()
+									}
+									
+									
+									Get-Item "$($new_rep_perso)\classe-$classe.lnk" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Read, Synchronize
+									Get-Item "$($path_eleves)\$($user.'login').lnk" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Read, Synchronize
+									
+								}
+								
+							}
+							
+							
+							
+							
+							if (Test-Path -Path $chemin_fichierbat)
+							{
+								Remove-Item $chemin_fichierbat -Confirm:$false -Force
+							}
+							New-Item $chemin_fichierbat
+							Invoke-Expression -Command:"icacls $chemin_fichierbat /grant:r $($user.'login'):'(OI)(CI)(RX)' /T"
+							$lecteurperso = "net use t: \\$nom_serveur\$($user.'login')"
+							Start-Sleep -Milliseconds 500
+							Set-Content -Path $chemin_fichierbat -Value "@echo off"
+							add-Content -Path $chemin_fichierbat -Value $lecteurperso | Out-Null
+							add-Content -Path $chemin_fichierbat -Value 'timeout 5 > NUL'
+							add-Content -Path $chemin_fichierbat -Value 'echo n | gpupdate /target:user /force'
+							$progressbarimportation.PerformStep()
+						}
+					}
+				}
+				else
+				{
+					
+					#Travail sur le déplacement des données
+
+					
+					foreach ($old_user in $OLD_CSV)
+					{
+						[System.Windows.Forms.Application]::DoEvents()
+						if ($($old_user.'login') -eq $Username)
+						{
+							if (-not ($old_user.'CLASSE' -eq $user.'CLASSE'))
+							{
+								if (-not $user.'CLASSE' -eq "")
+								{
+									$classe = $user.'classe'
+									remove-adgroupmember -Identity $($old_user.'classe') -Members $($user.'login') -Confirm:$false
+									
+									$dn = $($old_user.'DistinguishedName')
+									$resultdn = ($dn -split 'OU=|,OU=')[1]
+									$logintemp = $($user.'login')
+									$old_classe = $($old_user.'classe')
+									if ($resultdn -ne "$OU_TEMP")
+									{
+										
+										if ($resultdn -ne $($user.'classe'))
+										{
+											Remove-SmbShare -Name "$($user.'login')" -Force
+											
+											$old_repertoire_perso = "$rep_perso_base\$nom_eleves\$old_classe\$($old_user.'login')\"
+											
+											
+											$regle_old_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$old_classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+											$ACL = Get-Acl -Path $old_repertoire_perso # Récupérer la liste de contrôle d'accès (ACL) du dossier
+											$ACL.RemoveAccessRule($regle_old_prof_classe) # Supprimer la règle d'accès spécifiée
+											Set-Acl -Path $old_repertoire_perso -AclObject $ACL # Appliquer la nouvelle ACL au dossier
+											
+											
+											Add-Output -Text "Déplacement de l'élève $($user.'login') dans la classe $($user.'CLASSE')" -color green
+											Move-Item -Path $old_repertoire_perso -Destination $new_rep_perso -Force
+											
+											$Pathini = "$new_rep_perso\desktop.ini"
+											if (-not (Test-Path -Path $Pathini))
+											{
+												Copy-Item "$ScriptDirectory\config\Desktopini\desktop.ini" -destination $new_rep_perso -Force
+												Get-Item $Pathini | Disable-NTFSAccessInheritance
+												$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+												Remove-NTFSAccess -path $Pathini -Account $siduser -AccessRights Modify, Synchronize
+												Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+											}
+											
+											New-SMBShare -Name "$($user.'login')" -Path $new_rep_perso -FullAccess "Tout le monde" -ea 0
+											
+											
+											reset-FsrmQuota -Path $new_rep_perso -template "$template_quota" -Confirm:$false
+											
+											# récupère les droits
+											$acl = Get-Acl -Path $new_rep_perso
+											
+											# ajoute les permissions
+											$acl.SetAccessRuleProtection($True, $False)
+											
+											$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$rules = $regle_admin, $regle_user, $regle_prof_classe
+											
+											foreach ($rule in $rules)
+											{
+												$acl.AddAccessRule($rule)
+											}
+											# ajoute les permissions
+											$acl | Set-Acl -Path $new_rep_perso
+											$logintemp = $($user.'login')
+											
+											# On spécifié l'OU cible de l'utilisateur.
+											$OUcible = "OU=$OU_utilisateur_newad,$OU_utilisateur_base"
+											
+											# Déplacement dans la bonne OU.
+											$UserDN = (Get-ADUser -Identity $user.'login').distinguishedName
+											$UserDN1 = ($UserDN -split 'OU=|,OU=')[1]
+											
+											set-aduser -Identity $($user.'login') -company "Ancienne classe utilisateur $("$UserDN1")"
+											
+											#Affichage du déplacement
+											Add-Output -Text "Deplacement de l'utilisateur $Username vers l'OU $OUcible" -color magenta
+											Move-ADObject -Identity $UserDN -TargetPath $OUcible
+											
+											if (Test-Path -Path $chemin_fichierbat)
+											{
+												Remove-Item $chemin_fichierbat -Confirm:$false -Force
+											}
+											New-Item $chemin_fichierbat
+											#$lecteurperso1 = "if exist \\$nom_serveur\$($user.'login') (net use t: \\$nom_serveur\$($user.'login'))"
+											#$lecteurperso2 = "if exist \\$nom_serveur2\$($user.'login') (net use t: \\$nom_serveur2\$($user.'login'))"
+											$lecteurperso = "net use t: %logonserver%\$($user.'login')"
+											Start-Sleep -Milliseconds 500
+											Set-Content -Path $chemin_fichierbat -Value "@echo off"
+											#add-Content -Path $chemin_fichierbat -Value $lecteurperso1 | Out-Null
+											#add-Content -Path $chemin_fichierbat -Value $lecteurperso2 | Out-Null
+											add-Content -Path $chemin_fichierbat -Value $lecteurperso | Out-Null
+											add-Content -Path $chemin_fichierbat -Value 'timeout 5 > NUL'
+											add-Content -Path $chemin_fichierbat -Value 'echo n | gpupdate /target:user /force'
+											
+											set-aduser -Identity $($user.'login') -manager "Importautomatique" -profilepath "$profil_user" -scriptPath $fichierbat -displayname $nom_affiche -description $description_utilisateur -office $classe
+										}
+										
+									}
+									if ($User.'classe' -ne "")
+									{
+										if ($User.'classe' -ne $null)
+										{
+											Add-ADGroupMember -Identity $classe -Members $user.'login'
+											Add-Output -Text "Ajout de l'utilisateur $Username au groupe $classe " -color green # affiche l'attribution du groupe
+											
+											if (-not (test-path "$($new_rep_perso)\classe-$classe.lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$($new_rep_perso)\classe-$classe.lnk")
+												$lnk.TargetPath = "\\$nom_serveur\classe-$classe"
+												$lnk.Save()
+											}
+											
+											if (-not (test-path "$($path_eleves)\$($user.'login').lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$($path_eleves)\$($user.'login').lnk")
+												$lnk.TargetPath = "\\$nom_serveur\$($user.'login')"
+												$lnk.Save()
+											}
+											
+											Get-Item "$($new_rep_perso)\classe-$classe.lnk" | Disable-NTFSAccessInheritance
+											Remove-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Modify, Synchronize
+											Add-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Read, Synchronize
+											Remove-Item "$($new_rep_perso)\classe-$($old_user.'classe').lnk" -Force -Confirm:$false
+											
+											Get-Item "$($path_eleves)\$($user.'login').lnk" | Disable-NTFSAccessInheritance
+											Remove-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Modify, Synchronize
+											Add-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Read, Synchronize
+											
+											$logintemp = $($user.'login')
+											$oldclasse = "classe-$($old_user.'classe')"
+											$path_old_eleves = "$rep_classes\$($old_user.'classe')\élèves"
+											Remove-Item "$($path_old_eleves)\$($user.'login').lnk" -Force -Confirm:$false
+											
+										}
+									}
+								}
+								else
+								{
+									
+									if ($($old_user.'manager') -eq "CN=Import Automatique,CN=Users,$OU_base")
+									{
+										
+										$utilisateur_deplace = "1"
+										# On récupère tous les groupes auquel appartient l'utilisateur
+										$groups = get-adprincipalgroupmembership $($old_user.'SamAccountName');
+										
+										
+										#nettoyage des scripts de connexion
+										$chemin_old_fichierbat = "$netlogon$($old_user.'SamAccountName').bat"
+										Move-Item -Path $chemin_old_fichierbat -Destination $rep_ancien_scripts_utilisateur -Force
+										
+										
+										# Boucle sur l'ensemble des groupes
+										foreach ($group in $groups)
+										{
+											
+											# On exclue utilisateurs du domaine
+											if ($group.name -ne "Utilisateurs du domaine")
+											{
+												
+												# On enlève l'utilisateur des groupes listés
+												remove-adgroupmember -Identity $group.name -Members $old_user.'SamAccountName' -Confirm:$false;
+												
+											}
+										}
+										
+										# Déplace l'utilisateur dans l'OU temporaire
+										Move-ADObject -Identity $($old_user.'DistinguishedName') -TargetPath "OU=$OU_TEMP,$OU_base"
+										
+										# enleve l'utilisateur impor auto 
+										Set-ADuser -Identity $($old_user.'SamAccountName') -clear Manager
+										Add-Output -Text "L'utilisateur $($old_user.'SamAccountName') est déplacé dans l'OU temporaire" -Color blue
+										
+										# Suppression du partage  et déplacement dans ancien
+										Remove-SmbShare -Name "$($old_user.'SamAccountName')" -Force
+										$samaccount = $($old_user.'SamAccountName')
+										
+										if ($($old_user.'title') -eq "$nom_professeurs" -or $($old_user.'title') -eq "$nom_administratifs")
+										{
+											$ancienrepperso = "$rep_perso_base\$($old_user.'title')\$($old_user.'SamAccountName')"
+											$nouveaureperso = "$rep_ancien\$($old_user.'title')\"
+										}
+										elseif ($($old_user.'title') -eq "$nom_eleves")
+										{
+											$ancienrepperso = "$rep_perso_base\$nom_eleves\$($old_user.'office')\$($old_user.'SamAccountName')"
+											$nouveaureperso = "$rep_ancien\$nom_eleves\"
+										}
+										
+										Remove-FsrmQuota -Path $ancienrepperso -Confirm:$false
+										if (-not (Test-Path -Path $nouveaureperso))
+										{
+											New-Item -Path $nouveaureperso -ItemType Directory
+										}
+										
+										
+										Move-Item -Path $ancienrepperso -Destination $nouveaureperso -Force
+										
+									}
+									
+								}
+							}
+							
+							
+							# On teste si l'utilisateur à des options et on les attribue
+							if (-not ($old_user.'OPTIONS' -eq $user.'OPTIONS'))
+							{
+								
+								
+								$rep_options_perso = "$new_rep_perso\groupes\"
+								attrib -h $rep_options_perso
+								
+								
+								if (-not ($old_user.'OPTIONS' -eq ""))
+								{
+									if (-not ($old_user.'OPTIONS' -eq $null))
+									{
+										$old_user.'OPTIONS'.Split(",") | ForEach {
+											remove-adgroupmember -Identity $($_) -Members $($user.'login') -Confirm:$false;
+											Remove-Item "$rep_options_perso$_.lnk"
+										}
+									}
+								}
+								if ($User.'Options' -ne "")
+								{
+									if ($User.'Options' -ne $null)
+									{
+										
+										$User.'Options'.Split(",") | ForEach {
+											Add-ADGroupMember -Identity $_ -Members $user.'login'
+											Add-Output -Text "Ajout de l'utilisateur $Username au groupe $_ " -color green # affiche l'attribution du groupe
+											if (-not (Test-Path -Path $rep_options_perso))
+											{
+												New-Item -Path $rep_options_perso -ItemType Directory -Force
+											}
+											attrib -h $rep_options_perso
+											if (-not (test-path "$rep_options_perso$_.lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$rep_options_perso$_.lnk")
+												$lnk.TargetPath = "\\$nom_serveur\option-$_"
+												$lnk.Save()
+											}
+											
+											
+										}
+										attrib -h $rep_options_perso
+										$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+										Get-Item $rep_options_perso | Disable-NTFSAccessInheritance
+										Remove-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Modify, Synchronize
+										add-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Read
+										
+										
+									}
+									set-aduser -Identity $Username -streetAddress $($user.'options')
+									
+								}
+								else
+								{
+									
+									Get-ADUser $Username | Set-ADUser -Clear streetAddress
+									#set-aduser -Identity $Username -streetAddress $null
+								}
+								
+							}
+							
+							
+							
+						}
+					}
+					$progressbarimportation.PerformStep()
+				}
+				
+			}
+		}
+		catch
+		{
+			$err = $_.Exception.Message
+			Write-Host "$err"
+		}
+		
+	}
+	
+	else
+	{
+		
+		#/////////////////////////////////////
+		#
+		#   CREATION DES UTILISATEURS VERSION 2 SERVEUR
+		#
+		#////////////////////////////////////
+		
+		
+		Add-Output -Text "ETAPE 4 CREATION DES UTILISATEURS" -Header
+		
+		$OLD_CSV = Import-Csv -LiteralPath "$sauve_nettoyage_user_eleves" -Delimiter ";"
+		
+		try
+		{
+			
+			New-Item -ItemType File -Path $pathexporteleveCSV -force
+			Add-Content -Path $pathexporteleveCSV -Value "NOM_DE_FAMILLE;PRENOM;LOGIN;MOT_DE_PASSE;CLASSE" -Encoding UTF8
+			
+			
+			# Parcours ligne par ligne le fichier
+			foreach ($user in $CSV)
+			{
+				[System.Windows.Forms.Application]::DoEvents()
+				# Création des groupes d'utilisateurs correspondants aux options
+				if ($($user.'Options') -ne "")
+				{
+					$($user.'Options').Split(",") | ForEach {
+						try { $Group_option_Exists = Get-ADGroup -Filter 'Name -eq $_' -ErrorAction Continue }
+						catch { }
+						if ($Group_option_Exists -eq $NULL)
+						{
+							New-ADGroup -Name $_ -Path $OU_groupe_options -Description "Groupe des personnes faisant partie de l'option $_" -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de l'option
+							Add-Output -Text "Création du groupe de l'option $_" -Color Green
+						}
+						if (-not (Test-Path variable:"$($_)_var"))
+						{
+							New-Variable -Name "$($_)_var"
+							
+							$Path = "$rep_options\$_"
+							$path_ress = "$rep_options\$_\ressources"
+							$path_travail = "$rep_options\$_\travail"
+							if (Test-Path -Path $Path)
+							{
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions0
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$_", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "Option-$_" -ea 0))
+								{
+									New-SMBShare -Name "Option-$_" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage option-$_" -color green
+								}
+								if ($((Get-Variable -Name "$($_)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage option-$_" -color green
+									set-variable -Name "$($_)_var" -Value "1"
+								}
+								
+								
+								Get-Item $path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+								add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+								Invoke-Command -Session $s {
+									Get-Item $using:path_ress | Disable-NTFSAccessInheritance
+									add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+									add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights ReadAndExecute, Synchronize
+								}
+							}
+							else
+							{
+								
+								Add-Output -Text "Création du répertoire $path" -color green
+								# create new folder
+								New-Item -Path $Path -ItemType Directory
+								New-Item -Path $path_ress -ItemType Directory
+								New-Item -Path $path_travail -ItemType Directory
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$_", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "Option-$_" -ea 0))
+								{
+									New-SMBShare -Name "Option-$_" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage option-$_" -color green
+								}
+								if ($((Get-Variable -Name "$($_)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage option-$_" -color green
+									set-variable -Name "$($_)_var" -Value "1"
+								}
+							}
+							
+							$repertoiretemp = $_
+							$sidoption = ([Security2.IdentityReference2]$_).Sid
+							
+							Invoke-Command -Session $s {
+								if (Test-Path -Path $using:Path)
+								{
+									
+									try
+									{ $Group_option_Exists2 = Get-ADGroup -Identity $($using:repertoiretemp) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_option_Exists2 = Get-ADGroup -Identity $($using:repertoiretemp) }
+										catch { }
+									}
+									while ($null -eq $Group_option_Exists2)
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidoption -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "Option-$using:repertoiretemp" -ea 0))
+									{
+										New-SMBShare -Name "Option-$using:repertoiretemp" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+								else
+								{
+									
+									New-Item -Path $using:Path -ItemType Directory
+									New-Item -Path $using:path_ress -ItemType Directory
+									New-Item -Path $using:path_travail -ItemType Directory
+									
+									try
+									{ $Group_option_Exists2 = Get-ADGroup -Identity $($using:repertoiretemp) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_option_Exists2 = Get-ADGroup -Identity $($using:repertoiretemp) }
+										catch { }
+									}
+									while ($null -eq $Group_option_Exists2)
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidoption -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "Option-$using:repertoiretemp" -ea 0))
+									{
+										New-SMBShare -Name "Option-$using:repertoiretemp" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+							}
+							
+							Get-Item $path_ress | Disable-NTFSAccessInheritance
+							add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+							add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+							Invoke-Command -Session $s {
+								Get-Item $using:path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+								add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights ReadAndExecute, Synchronize
+							}
+						}
+					}
+				}
+				
+				
+				# Création des groupes d'utilisateurs correspondants aux classes
+				if ($($user.'classe') -ne "")
+				{
+					if ($($user.'classe') -ne $null)
+					{
+						$classe = $($user.'classe')
+						try
+						{
+							$Group_classe_Exists = Get-ADGroup -Filter 'Name -eq $classe' -ErrorAction Continue
+						}
+						catch { }
+						if ($Group_classe_Exists -eq $NULL)
+						{
+							New-ADGroup -Name $classe -Path $OU_groupe_classes -Description "Groupe des personnes faisant partie de la classe $classe" -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de l'option
+							Add-Output -Text "Création du groupe de classe $classe" -color Green
+						}
+						try
+						{
+							$testgroupeprofclasse = "Professeurs-$classe"
+							$GroupExists_profclasse = Get-ADGroup -Filter 'Name -eq $testgroupeprofclasse'
+						}
+						catch { }
+						if ($GroupExists_profclasse -eq $null)
+						{
+							New-ADGroup -Name "Professeurs-$classe" -Path $OU_professeur_classes -Description "Groupe des professeurs de la classe $classe " -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de classe
+							Add-Output -Text "Création du groupe de professeur de la classe $classe" -color Green
+						}
+						
+						if (-not (Test-Path variable:"$($classe)_var"))
+						{
+							New-Variable -Name "$($classe)_var"
+							$Path = "$rep_classes\$classe"
+							$path_ress = "$rep_classes\$classe\ressources"
+							$path_travail = "$rep_classes\$classe\travail"
+							$path_eleves = "$rep_classes\$classe\élèves"
+							
+							
+							if (Test-Path -Path $Path)
+							{
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions0
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$classe", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "classe-$classe" -ea 0))
+								{
+									New-SMBShare -Name "classe-$classe" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage classe-$classe" -color green
+								}
+								if ($((Get-Variable -Name "$($classe)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage classe-$classe" -color green
+									set-variable -Name "$($classe)_var" -Value "1"
+								}
+							}
+							else
+							{
+								
+								Add-Output -Text "Création du répertoire $path" -color green
+								# create new folder
+								New-Item -Path $Path -ItemType Directory
+								New-Item -Path $path_ress -ItemType Directory
+								New-Item -Path $path_travail -ItemType Directory
+								New-Item -Path $path_eleves -ItemType Directory
+								
+								
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$classe", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "classe-$classe" -ea 0))
+								{
+									New-SMBShare -Name "classe-$classe" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage classe-$classe" -color green
+								}
+								if ($((Get-Variable -Name "$($classe)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage classe-$classe" -color green
+									set-variable -Name "$($classe)_var" -Value "1"
+								}
+							}
+							
+							
+							$sidclasse = ([Security2.IdentityReference2]$classe).Sid
+							
+							Invoke-Command -Session $s {
+								if (Test-Path -Path $using:Path)
+								{
+									
+									# récupère les droits
+									#$acl = Get-Acl -Path $using:Path
+									
+									try
+									{ $Group_classe_Exists2 = Get-ADGroup -Identity $($using:classe) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_classe_Exists2 = Get-ADGroup -Identity $($using:classe) }
+										catch { }
+									}
+									while ($null -eq $Group_classe_Exists2)
+									
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidclasse -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "classe-$using:classe" -ea 0))
+									{
+										New-SMBShare -Name "classe-$using:classe" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+								else
+								{
+									
+									New-Item -Path $using:Path -ItemType Directory
+									New-Item -Path $using:path_ress -ItemType Directory
+									New-Item -Path $using:path_travail -ItemType Directory
+									New-Item -Path $using:path_eleves -ItemType Directory
+									
+									
+									try
+									{ $Group_classe_Exists2 = Get-ADGroup -Identity $($using:classe) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_classe_Exists2 = Get-ADGroup -Identity $($using:classe) }
+										catch { }
+									}
+									while ($null -eq $Group_classe_Exists2)
+									
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidclasse -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "classe-$using:classe" -ea 0))
+									{
+										New-SMBShare -Name "classe-$using:classe" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+							}
+							Get-Item $path_ress | Disable-NTFSAccessInheritance
+							add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+							add-NTFSAccess -path $path_ress -Account $sideleves -AccessRights ReadAndExecute, Synchronize
+							Invoke-Command -Session $s {
+								Get-Item $using:path_ress | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights DeleteSubdirectoriesAndFiles, Write, Delete -AccessType Deny
+								add-NTFSAccess -path $using:path_ress -Account $using:sideleves -AccessRights ReadAndExecute, Synchronize
+							}
+							Get-Item $path_eleves | Disable-NTFSAccessInheritance
+							add-NTFSAccess -path $path_eleves -Account $sideleves -AccessRights FullControl -AccessType Deny
+							
+							Invoke-Command -Session $s {
+								Get-Item $using:path_eleves | Disable-NTFSAccessInheritance
+								add-NTFSAccess -path $using:path_eleves -Account $using:sideleves -AccessRights FullControl -AccessType Deny
+							}
+							
+						}
+					}
+					
+				}
+				
+				# Création des groupes d'utilisateurs correspondants aux matières
+				if ($($user.'matiere') -ne "")
+				{
+					if ($($user.'matiere') -ne $null)
+					{
+						
+						$matiere = $($user.'matiere')
+						try
+						{
+							$Group_matiere_Exists = Get-ADGroup -Filter 'Name -eq $matiere' -ErrorAction Continue
+						}
+						catch { }
+						if ($Group_matiere_Exists -eq $NULL)
+						{
+							New-ADGroup -Name $matiere -Path $OU_groupe_matieres -Description "Groupe des personnes faisant partie de la matiere $matiere" -GroupCategory Security -GroupScope Universal -managedby "Importautomatique"
+							# On affiche la création de l'option
+							Add-Output -Text "Création du groupe de matiere $matiere" -color Green
+						}
+						
+						if (-not (Test-Path variable:"$($matiere)_var"))
+						{
+							New-Variable -Name "$($matiere)_var"
+							$Path = "$rep_matieres\$matiere"
+							
+							if (Test-Path -Path $Path)
+							{
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions0
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$matiere", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "matiere-$matiere" -ea 0))
+								{
+									New-SMBShare -Name "matiere-$matiere" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage matiere-$matiere" -color green
+								}
+								if ($((Get-Variable -Name "$($matiere)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage matiere-$matiere" -color green
+									set-variable -Name "$($matiere)_var" -Value "1"
+								}
+							}
+							else
+							{
+								
+								Add-Output -Text "Création du répertoire $path" -color green
+								# create new folder
+								New-Item -Path $Path -ItemType Directory
+								
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $path
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								$regle_groupe = New-Object System.Security.AccessControl.FileSystemAccessRule("$matiere", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$rules = $regle_admin, $regle_groupe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $Path
+								
+								# créé le partage
+								if (!(Get-SMBShare -Name "matiere-$matiere" -ea 0))
+								{
+									New-SMBShare -Name "matiere-$matiere" -Path $Path -FullAccess "Tout le monde"
+									Add-Output -Text "Création du partage matiere-$matiere" -color green
+								}
+								if ($((Get-Variable -Name "$($matiere)_var").Value) -ne "1")
+								{
+									Add-Output -Text "Application des droits sur le partage matiere-$matiere" -color green
+									set-variable -Name "$($matiere)_var" -Value "1"
+								}
+							}
+							
+							
+							$sidmatiere = ([Security2.IdentityReference2]$matiere).Sid
+							
+							Invoke-Command -Session $s {
+								if (Test-Path -Path $using:Path)
+								{
+									
+									# récupère les droits
+									#$acl = Get-Acl -Path $using:Path
+									
+									try
+									{ $Group_matiere_Exists2 = Get-ADGroup -Identity $($using:matiere) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_matiere_Exists2 = Get-ADGroup -Identity $($using:matiere) }
+										catch { }
+									}
+									while ($null -eq $Group_matiere_Exists2)
+									
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidmatiere -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "matiere-$using:matiere" -ea 0))
+									{
+										New-SMBShare -Name "matiere-$using:matiere" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+								else
+								{
+									
+									New-Item -Path $using:Path -ItemType Directory
+									
+									
+									try
+									{ $Group_matiere_Exists2 = Get-ADGroup -Identity $($using:matiere) }
+									catch { }
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										try
+										{ $Group_matiere_Exists2 = Get-ADGroup -Identity $($using:matiere) }
+										catch { }
+									}
+									while ($null -eq $Group_matiere_Exists2)
+									
+									
+									Get-Item "$using:Path" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights ReadAndExecute, Synchronize
+									Remove-NTFSAccess -Path "$using:Path" -Account "BUILTIN\Utilisateurs" -AccessRights CreateFiles, CreateDirectories
+									Add-NTFSAccess -Path "$using:Path" -Account $using:sidmatiere -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$using:Path" -Account "BUILTIN\administrateurs" -AccessRights FullControl
+									
+									# créé le partage
+									if (!(Get-SMBShare -Name "matiere-$using:matiere" -ea 0))
+									{
+										New-SMBShare -Name "matiere-$using:matiere" -Path $using:Path -FullAccess "Tout le monde"
+									}
+								}
+							}
+						}
+						
+					}
+				}
+				
+				
+				
+				# attribution de la variable username
+				$username = "$($user.'login')"
+				
+				#Attribution dy type de l'utilisateur
+				$type_utilisateur = "$($user.'groupe')"
+				
+				$nom_affiche = "$($user.'Prenom') $($user.'nom')"
+				
+				#Permet de tester si l'utilisateur existe déjà dans l'AD
+				$ExistingADUser = Get-ADUser -Filter "SamAccountName -eq '$($user.'login')'"
+				
+				
+				# Attribution des variables en fonction des types utilisateurs
+				
+				if ($type_utilisateur -eq "$nom_eleves")
+				{
+					$line = $user.'Nom' + ";" + $user.'prenom' + ";" + $user.'login' + ";" + $user.'mot de passe' + ";" + $user.'classe'
+					if ($profil -eq "obligatoire")
+					{
+						$profil_user = "$rep_profils\$nom_eleves"
+					}
+					elseif ($profil -eq "itinerant")
+					{
+						$profil_user = "$rep_profils_it\$($user.'login')"
+					}
+					elseif ($profil -eq "local")
+					{
+						$profil_user = ""
+					}
+					$OU_utilisateur_newad = "$($user.'classe'),OU=$OU_classes"
+					$repertoire_perso = "$rep_perso_base\$nom_eleves\$($user.'classe')"
+					$description_utilisateur = "Compte élève de la classe $($user.'classe')"
+					$classe = $($user.'classe')
+					$template_quota = $template_quota_eleve
+					$taille_quota = $quota_eleve
+					Add-Content -Path $pathexporteleveCSV -Value $line
+					
+					
+				}
+				
+				# Creation de la variable du fichier script
+				$chemin_fichierbat = "$netlogon$($user.'login').bat"
+				$fichierbat = "$($user.'login').bat"
+				
+				#repertoire perso
+				$new_rep_perso = "$repertoire_perso\$($username)"
+				$path_DL = "$new_rep_perso\Telechargements"
+				$path_prive = "$new_rep_perso\Privé"
+				
+				
+				# Si l'utilisateur n'existe pas alors on le créé
+				if ($null -eq $ExistingADUser)
+				{
+					if ($($user.'classe')  -ne "")
+					{
+						
+						
+						if ($($user.'classe') -ne $null)
+						{
+							# Création de la variable du mot de passe
+							$mdp = "$($user.'mot de passe')"
+							
+							
+							# On créé l'utilisateur
+							if ($profil -eq "local")
+							{
+								New-ADUser -Name $user.'login' `
+										   -GivenName $user.'Prenom' `
+										   -Surname $user.'Nom' `
+										   -displayname $nom_affiche `
+										   -UserPrincipalName $user.'login'`
+										   -SamAccountName $user.'login' `
+										   -Description $description_utilisateur `
+										   -Path "OU=$OU_utilisateur_newad,$OU_utilisateur_base" `
+										   -AccountPassword (ConvertTo-SecureString $mdp -AsPlainText -Force) `
+										   -ChangePasswordAtLogon $true `
+										   -Enabled $true `
+										   -POBox $user.'date naissance' `
+										   -Manager "Importautomatique" `
+										   -title $type_utilisateur `
+										   -office $classe `
+										   -scriptPath $fichierbat `
+										   -streetAddress $($user.'options') `
+										   -division $user.'matiere'`
+										   -EmployeeID $mdp
+							}
+							else
+							{
+								New-ADUser -Name $user.'login' `
+										   -GivenName $user.'Prenom' `
+										   -Surname $user.'Nom' `
+										   -displayname $nom_affiche `
+										   -UserPrincipalName $user.'login'`
+										   -SamAccountName $user.'login' `
+										   -Description $description_utilisateur `
+										   -Path "OU=$OU_utilisateur_newad,$OU_utilisateur_base" `
+										   -AccountPassword (ConvertTo-SecureString $mdp -AsPlainText -Force) `
+										   -ChangePasswordAtLogon $true `
+										   -Enabled $true `
+										   -POBox $user.'date naissance' `
+										   -Manager "Importautomatique" `
+										   -profilePath $profil_user `
+										   -title $type_utilisateur `
+										   -office $classe `
+										   -scriptPath $fichierbat `
+										   -streetAddress $($user.'options') `
+										   -division $user.'matiere'`
+										   -EmployeeID $mdp
+								
+							}
+							
+							
+							
+							#ajout du groupe de base 
+							Add-ADGroupMember -Identity $type_utilisateur -Members $user.'login'
+							
+							# On affiche la création de l'utilisateur
+							Add-Output -Text "Création de l'utilisateur $Username" -Color magenta
+							$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+							
+							if (-not (Test-Path -Path $new_rep_perso))
+							{
+								Add-Output -Text "Création du répertoire $new_rep_perso" -Color green
+								# create new folder
+								New-Item -Path $new_rep_perso -ItemType Directory
+								New-Item -Path $path_DL -ItemType Directory
+								New-Item -Path $path_prive -ItemType Directory
+								
+					
+								Add-Output -Text "Application du quota : $template_quota" -Color green
+								new-FsrmQuota -Path $new_rep_perso -description "$template_quota" -template "$template_quota"
+								#reset-FsrmQuota -Path $new_rep_perso -template "$template_quota" -Confirm:$false
+								
+								# récupère les droits
+								$acl = Get-Acl -Path $new_rep_perso
+								
+								
+								# ajoute les permissions
+								$acl.SetAccessRuleProtection($True, $False)
+								
+								$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+								
+								
+								$rules = $regle_admin, $regle_user, $regle_prof_classe
+								
+								foreach ($rule in $rules)
+								{
+									$acl.AddAccessRule($rule)
+								}
+								# ajoute les permissions
+								$acl | Set-Acl -Path $new_rep_perso
+								
+								$acl_DL = Get-Acl $path_DL
+								$acl_DL.SetAccessRuleProtection($true, $false)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "Allow")
+								$acl_DL.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Delete", "Deny")
+								$acl_DL.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+								$acl_DL.SetAccessRule($Ar)
+								Set-Acl $path_DL $acl_DL
+								
+								$acl_prive = Get-Acl $path_prive
+								$acl_prive.SetAccessRuleProtection($true, $false)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "Allow")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Delete", "Deny")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($nom_professeurs), "Read", "Deny")
+								$acl_prive.SetAccessRule($Ar)
+								$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+								$acl_prive.SetAccessRule($Ar)
+								Set-Acl $path_prive $acl_prive
+								
+								
+								
+								# créé le partage
+								New-SMBShare -Name "$($user.'login')" -Path $new_rep_perso -FullAccess "Tout le monde" -ea 0
+								
+								Copy-Item "$ScriptDirectory\config\Desktopini\desktop.ini" -destination $new_rep_perso -Force
+								$Pathini = "$new_rep_perso\desktop.ini"
+								Get-Item $Pathini | Disable-NTFSAccessInheritance
+								
+								Remove-NTFSAccess -path $Pathini -Account $siduser -AccessRights Modify, Synchronize
+								Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+							}
+							$logintemp = $($user.'login')
+							Invoke-Command -Session $s {
+								if (-not (Test-Path -Path $using:new_rep_perso))
+								{
+									
+									New-Item -Path $using:new_rep_perso -ItemType Directory
+									New-Item -Path $using:path_DL -ItemType Directory
+									New-Item -Path $using:path_prive -ItemType Directory
+									
+									new-FsrmQuota -Path $using:new_rep_perso -description "$using:template_quota" -template "$using:template_quota" #-Size $using:taille_quota
+									#reset-FsrmQuota -Path $using:new_rep_perso -template "$using:template_quota" -Confirm:$false
+									
+									$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+									
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+									}
+									while ($null -eq $ExistingADUsersrv2)
+									
+									# récupère les droits
+									$acl = Get-Acl -Path $using:new_rep_perso
+									
+									
+									# ajoute les permissions
+									$acl.SetAccessRuleProtection($True, $False)
+									
+									$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									
+									$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$using:classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									$rules = $regle_admin, $regle_user, $regle_prof_classe
+									
+									foreach ($rule in $rules)
+									{
+										$acl.AddAccessRule($rule)
+									}
+									# ajoute les permissions
+									$acl | Set-Acl -Path $using:new_rep_perso
+									
+									$acl_DL = Get-Acl $using:path_DL
+									$acl_DL.SetAccessRuleProtection($true, $false)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "Allow")
+									$acl_DL.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Delete", "Deny")
+									$acl_DL.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+									$acl_DL.SetAccessRule($Ar)
+									Set-Acl $using:path_DL $acl_DL
+									
+									$acl_prive = Get-Acl $using:path_prive
+									$acl_prive.SetAccessRuleProtection($true, $false)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "Allow")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Delete", "Deny")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:nom_professeurs), "Read", "Deny")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+									$acl_prive.SetAccessRule($Ar)
+									Set-Acl $using:path_prive $acl_prive
+									
+									# créé le partage
+									New-SMBShare -Name "$($using:logintemp)" -Path $using:new_rep_perso -FullAccess "Tout le monde" -ea 0
+									
+									Copy-Item "$using:ScriptDirectory\config\Desktopini\desktop.ini" -destination $using:new_rep_perso -Force
+									$Pathini = "$using:new_rep_perso\desktop.ini"
+									Get-Item $Pathini | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -path $Pathini -Account $using:siduser -AccessRights Modify, Synchronize
+									Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+								}
+								else
+								{
+									if (-not (Test-Path -Path $using:path_DL))
+									{
+										New-Item -Path $using:path_DL -ItemType Directory
+										
+									}
+									if (-not (Test-Path -Path $using:path_prive))
+									{
+										New-Item -Path $using:path_prive -ItemType Directory
+									}
+									
+									new-FsrmQuota -Path $using:new_rep_perso -description "$using:template_quota" -template "$using:template_quota" #-Size $using:taille_quota
+									#reset-FsrmQuota -Path $using:new_rep_perso -template "$using:template_quota" -Confirm:$false
+									
+									$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+									
+									Do
+									{
+										Start-Sleep -Milliseconds 200
+										$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+									}
+									while ($null -eq $ExistingADUsersrv2)
+									
+									# récupère les droits
+									$acl = Get-Acl -Path $using:new_rep_perso
+									
+									
+									# ajoute les permissions
+									$acl.SetAccessRuleProtection($True, $False)
+									
+									$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									
+									$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$using:classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+									
+									$rules = $regle_admin, $regle_user, $regle_prof_classe
+									
+									foreach ($rule in $rules)
+									{
+										$acl.AddAccessRule($rule)
+									}
+									# ajoute les permissions
+									$acl | Set-Acl -Path $using:new_rep_perso
+									
+									$acl_DL = Get-Acl $using:path_DL
+									$acl_DL.SetAccessRuleProtection($true, $false)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "Allow")
+									$acl_DL.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Delete", "Deny")
+									$acl_DL.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+									$acl_DL.SetAccessRule($Ar)
+									Set-Acl $using:path_DL $acl_DL
+									
+									$acl_prive = Get-Acl $using:path_prive
+									$acl_prive.SetAccessRuleProtection($true, $false)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "Allow")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Delete", "Deny")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:nom_professeurs), "Read", "Deny")
+									$acl_prive.SetAccessRule($Ar)
+									$Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "Allow")
+									$acl_prive.SetAccessRule($Ar)
+									Set-Acl $using:path_prive $acl_prive
+									
+									# créé le partage
+									New-SMBShare -Name "$($using:logintemp)" -Path $using:new_rep_perso -FullAccess "Tout le monde" -ea 0
+									
+									Copy-Item "$using:ScriptDirectory\config\Desktopini\desktop.ini" -destination $using:new_rep_perso -Force
+									$Pathini = "$using:new_rep_perso\desktop.ini"
+									Get-Item $Pathini | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -path $Pathini -Account $using:siduser -AccessRights Modify, Synchronize
+									Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+									
+									
+									
+									
+									
+								}
+							}
+							
+							
+							
+							
+							# On teste si l'utilisateur à des options et on les attribue
+							if ($User.'Options' -ne "")
+							{
+								if ($User.'Options' -ne $null)
+								{
+									
+									$rep_options_perso = "$new_rep_perso\groupes\"
+									$User.'Options'.Split(",") | ForEach {
+										Add-ADGroupMember -Identity $_ -Members $user.'login'
+										Add-Output -Text "Ajout de l'utilisateur $Username au groupe $_ " -color green # affiche l'attribution du groupe
+										if (-not (Test-Path -Path $rep_options_perso))
+										{
+											New-Item -Path $rep_options_perso -ItemType Directory -Force
+											$Folder = Get-Item  $rep_options_perso
+											$Folder.Attributes += 'ReadOnly'
+											attrib -h $rep_options_perso
+											
+										}
+										else { attrib -h $rep_options_perso }
+										
+										
+										if (-not (test-path "$rep_options_perso$_.lnk"))
+										{
+											$objShell = New-Object -ComObject WScript.Shell
+											$lnk = $objShell.CreateShortcut("$rep_options_perso$_.lnk")
+											$lnk.TargetPath = "\\$nom_serveur\option-$_"
+											$lnk.Save()
+										}
+										$optionsvr2 = $_
+										Invoke-Command -Session $s {
+											if (-not (Test-Path -Path $using:rep_options_perso))
+											{
+												New-Item -Path $using:rep_options_perso -ItemType Directory -Force
+												$Folder = Get-Item  $using:rep_options_perso
+												$Folder.Attributes += 'ReadOnly'
+												attrib -h $using:rep_options_perso
+											}
+											else
+											{
+												attrib -h $using:rep_options_perso
+											}
+											
+											if (-not (test-path "$using:rep_options_perso$using:optionsvr2.lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$using:rep_options_perso$using:optionsvr2.lnk")
+												$lnk.TargetPath = "\\$using:nom_serveur2\option-$using:optionsvr2"
+												$lnk.Save()
+											}
+										}
+										
+									}
+									
+									Get-Item $rep_options_perso | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Modify, Synchronize
+									add-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Read
+									
+									
+									Invoke-Command -Session $s {
+										Get-Item $using:rep_options_perso | Disable-NTFSAccessInheritance
+										Remove-NTFSAccess -path $using:rep_options_perso -Account $using:siduser -AccessRights Modify, Synchronize
+										add-NTFSAccess -path $using:rep_options_perso -Account $using:siduser -AccessRights Read
+										
+									}
+								}
+								
+							}
+							
+							# On teste si l'utilisateur à une classe et on l attribue
+							if ($User.'classe' -ne "")
+							{
+								if ($User.'classe' -ne $null)
+								{
+									$classe = $user.'classe'
+									$login = $user.'login'
+									
+									Add-ADGroupMember -Identity $classe -Members $user.'login'
+									Add-Output -Text "Ajout de l'utilisateur $Username au groupe $classe " -color green # affiche l'attribution du groupe
+									
+									
+									if (-not (test-path "$($new_rep_perso)\classe-$classe.lnk"))
+									{
+										$objShell = New-Object -ComObject WScript.Shell
+										$lnk = $objShell.CreateShortcut("$($new_rep_perso)\classe-$classe.lnk")
+										$lnk.TargetPath = "\\$nom_serveur\classe-$classe"
+										$lnk.Save()
+									}
+									$classevr2 = $classe
+									Invoke-Command -Session $s {
+										
+										
+										if (-not (test-path "$($using:new_rep_perso)\classe-$using:classevr2.lnk"))
+										{
+											$objShell = New-Object -ComObject WScript.Shell
+											$lnk = $objShell.CreateShortcut("$($using:new_rep_perso)\classe-$using:classevr2.lnk")
+											$lnk.TargetPath = "\\$using:nom_serveur2\classe-$using:classevr2"
+											$lnk.Save()
+										}
+									}
+									
+									
+									Get-Item "$($new_rep_perso)\classe-$classe.lnk" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Read, Synchronize
+									
+									Invoke-Command -Session $s {
+										
+										Get-Item "$($using:new_rep_perso)\classe-$using:classevr2.lnk" | Disable-NTFSAccessInheritance
+										Remove-NTFSAccess -Path "$($using:new_rep_perso)\classe-$using:classevr2.lnk" -Account $($using:logintemp) -AccessRights Modify, Synchronize
+										Add-NTFSAccess -Path "$($using:new_rep_perso)\classe-$using:classevr2.lnk" -Account $($using:logintemp) -AccessRights Read, Synchronize
+									}
+									
+									if (-not (test-path "$($path_eleves)\$($user.'login').lnk"))
+									{
+										$objShell = New-Object -ComObject WScript.Shell
+										$lnk = $objShell.CreateShortcut("$($path_eleves)\$($user.'login').lnk")
+										$lnk.TargetPath = "\\$nom_serveur\$($user.'login')"
+										$lnk.Save()
+									}
+									Invoke-Command -Session $s {
+										
+										if (-not (test-path "$($using:path_eleves)\$($using:login).lnk"))
+										{
+											$objShell = New-Object -ComObject WScript.Shell
+											$lnk = $objShell.CreateShortcut("$($using:path_eleves)\$($using:login).lnk")
+											$lnk.TargetPath = "\\$using:nom_serveur2\$($using:login)"
+											$lnk.Save()
+										}
+									}
+									
+									Get-Item "$($path_eleves)\$($user.'login').lnk" | Disable-NTFSAccessInheritance
+									Remove-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Modify, Synchronize
+									Add-NTFSAccess -Path "$($path_eleves)\$($user.'login').lnk" -Account "Professeurs-$classe" -AccessRights Read, Synchronize
+									
+									Invoke-Command -Session $s {
+										
+										Get-Item "$($using:path_eleves)\$($using:logintemp).lnk" | Disable-NTFSAccessInheritance
+										Remove-NTFSAccess -Path "$($using:path_eleves)\$($using:logintemp).lnk" -Account "Professeurs-$using:classe" -AccessRights Modify, Synchronize
+										Add-NTFSAccess -Path "$($using:path_eleves)\$($using:logintemp).lnk" -Account "Professeurs-$using:classe" -AccessRights Read, Synchronize
+										
+									}
+								}
+								
+							}
+							
+							
+							
+							
+							if (Test-Path -Path $chemin_fichierbat)
+							{
+								Remove-Item $chemin_fichierbat -Confirm:$false -Force
+							}
+							New-Item $chemin_fichierbat
+							Invoke-Expression -Command:"icacls $chemin_fichierbat /grant:r $($user.'login'):'(OI)(CI)(RX)' /T"
+							#$lecteurperso1 = "if exist \\$nom_serveur\$($user.'login') (net use t: \\$nom_serveur\$($user.'login'))"
+							#$lecteurperso2 = "if exist \\$nom_serveur2\$($user.'login') (net use t: \\$nom_serveur2\$($user.'login'))"
+							$lecteurperso = "net use t: %logonserver%\$($user.'login')"
+							Start-Sleep -Milliseconds 500
+							Set-Content -Path $chemin_fichierbat -Value "@echo off"
+							#add-Content -Path $chemin_fichierbat -Value $lecteurperso1 | Out-Null
+							#add-Content -Path $chemin_fichierbat -Value $lecteurperso2 | Out-Null
+							add-Content -Path $chemin_fichierbat -Value $lecteurperso | Out-Null
+							add-Content -Path $chemin_fichierbat -Value 'timeout 5 > NUL'
+							add-Content -Path $chemin_fichierbat -Value 'echo n | gpupdate /target:user /force'
+							$progressbarimportation.PerformStep()
+						}
+					}
+				}
+				else
+				{
+
+					$login = $($user.'login')
+					#Travail sur le déplacement des données
+					
+					foreach ($old_user in $OLD_CSV)
+					{
+						[System.Windows.Forms.Application]::DoEvents()
+						if ($($old_user.'login') -eq $Username)
+						{
+							if (-not ($old_user.'CLASSE' -eq $user.'CLASSE'))
+							{
+								if (-not $user.'CLASSE' -eq "")
+								{
+									$classe = $user.'classe'
+									remove-adgroupmember -Identity $($old_user.'classe') -Members $($user.'login') -Confirm:$false
+									
+									$dn = $($old_user.'DistinguishedName')
+									$resultdn = ($dn -split 'OU=|,OU=')[1]
+									$old_classe = $($old_user.'classe')
+									$logintemp = $($user.'login')
+									$path_new_eleves = "$rep_classes\$($user.'CLASSE')\élèves"
+									$path_old_eleves = "$rep_classes\$($old_user.'CLASSE')\élèves"
+									if ($resultdn -ne "$OU_TEMP")
+									{
+										
+										if ($resultdn -ne $($user.'classe'))
+										{
+											Remove-SmbShare -Name "$($user.'login')" -Force
+											Invoke-Command -Session $s {
+												Remove-SmbShare -Name "$using:logintemp" -Force
+											}
+											$old_repertoire_perso = "$rep_perso_base\$nom_eleves\$old_classe\$($old_user.'login')\"
+											
+											
+											$ACL = Get-Acl -Path $old_repertoire_perso # Récupérer la liste de contrôle d'accès (ACL) du dossier
+											
+											# Récupérer toutes les règles d'accès qui contiennent "Professeurs-$classeactuelle" en tant que groupe de sécurité
+											$rulesToRemove = $ACL.Access | Where-Object { $_.IdentityReference -like "*Professeurs-$old_classe*" }
+											
+											if ($rulesToRemove)
+											{
+												foreach ($rule in $rulesToRemove)
+												{
+													$ACL.RemoveAccessRule($rule) # Supprimer la règle d'accès correspondante
+												}
+												Set-Acl -Path $old_repertoire_perso -AclObject $ACL # Appliquer la nouvelle ACL au dossier
+											}
+											
+											if ($s -ne "vide")
+											{
+												
+												Invoke-Command -Session $s {
+													
+													
+													$ACL = Get-Acl -Path $using:old_repertoire_perso # Récupérer la liste de contrôle d'accès (ACL) du dossier
+													
+													# Récupérer toutes les règles d'accès qui contiennent "Professeurs-$classeactuelle" en tant que groupe de sécurité
+													$rulesToRemove = $ACL.Access | Where-Object { $_.IdentityReference -like "*Professeurs-$using:old_classe*" }
+													
+													if ($rulesToRemove)
+													{
+														foreach ($rule in $rulesToRemove)
+														{
+															$ACL.RemoveAccessRule($rule) # Supprimer la règle d'accès correspondante
+														}
+														Set-Acl -Path $using:old_repertoire_perso -AclObject $ACL # Appliquer la nouvelle ACL au dossier
+													}
+												}
+											}
+											
+											
+											
+											Add-Output -Text "Déplacement de l'élève $($user.'login') dans la classe $($user.'CLASSE')" -color green
+											Move-Item -Path $old_repertoire_perso -Destination $new_rep_perso -Force
+											Invoke-Command -Session $s {
+												
+												Move-Item -Path $using:old_repertoire_perso -Destination $using:new_rep_perso -Force
+											}
+											New-SMBShare -Name "$($user.'login')" -Path $new_rep_perso -FullAccess "Tout le monde" -ea 0
+											Invoke-Command -Session $s {
+												New-SMBShare -Name "$using:logintemp" -Path $using:new_rep_perso -FullAccess "Tout le monde" -ea 0
+											}
+											
+											reset-FsrmQuota -Path $new_rep_perso -template "$template_quota" -Confirm:$false
+											
+											
+											$Pathini = "$new_rep_perso\desktop.ini"
+											$siduser = ([Security2.IdentityReference2]$($user.'login')).Sid
+											if (-not (Test-Path -Path $Pathini))
+											{
+												Copy-Item "$ScriptDirectory\config\Desktopini\desktop.ini" -destination $new_rep_perso -Force
+												Get-Item $Pathini | Disable-NTFSAccessInheritance
+												
+												Remove-NTFSAccess -path $Pathini -Account $siduser -AccessRights Modify, Synchronize
+												Get-ChildItem $Pathini -Force | ForEach-Object { $_.Attributes += "Hidden" }
+											}
+											# récupère les droits
+											$acl = Get-Acl -Path $new_rep_perso
+											
+											# ajoute les permissions
+											$acl.SetAccessRuleProtection($True, $False)
+											
+											$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($user.'login'), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+											
+											$rules = $regle_admin, $regle_user, $regle_prof_classe
+											
+											foreach ($rule in $rules)
+											{
+												$acl.AddAccessRule($rule)
+											}
+											# ajoute les permissions
+											$acl | Set-Acl -Path $new_rep_perso
+											$logintemp = $($user.'login')
+											Invoke-Command -Session $s {
+												reset-FsrmQuota -Path $using:new_rep_perso -template "$using:template_quota" -Confirm:$false
+												$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+												Do
+												{
+													Start-Sleep -Milliseconds 500
+													$ExistingADUsersrv2 = Get-ADUser -Filter "SamAccountName -eq '$($using:logintemp)'"
+												}
+												while ($null -eq $ExistingADUsersrv2)
+												# récupère les droits
+												$acl = Get-Acl -Path $using:new_rep_perso
+												
+												# ajoute les permissions
+												$acl.SetAccessRuleProtection($True, $False)
+												
+												$regle_admin = New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateurs", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow")
+												
+												
+												$regle_user = New-Object System.Security.AccessControl.FileSystemAccessRule($($using:logintemp), "Modify", "ContainerInherit, ObjectInherit", "None", "Allow")
+												
+												$regle_prof_classe = New-Object System.Security.AccessControl.FileSystemAccessRule("Professeurs-$using:classe", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow")
+												
+												
+												$rules = $regle_admin, $regle_user, $regle_prof_classe
+												
+												foreach ($rule in $rules)
+												{
+													$acl.AddAccessRule($rule)
+												}
+												# ajoute les permissions
+												$acl | Set-Acl -Path $using:new_rep_perso
+											}
+											
+											# On spécifié l'OU cible de l'utilisateur.
+											$OUcible = "OU=$OU_utilisateur_newad,$OU_utilisateur_base"
+											
+											# Déplacement dans la bonne OU.
+											$UserDN = (Get-ADUser -Identity $user.'login').distinguishedName
+											$UserDN1 = ($UserDN -split 'OU=|,OU=')[1]
+											
+											set-aduser -Identity $($user.'login') -company "Ancienne classe utilisateur $("$UserDN1")"
+											
+											#Affichage du déplacement
+											Add-Output -Text "Deplacement de l'utilisateur $Username vers l'OU $OUcible" -color magenta
+											Move-ADObject -Identity $UserDN -TargetPath $OUcible
+											
+											if (Test-Path -Path $chemin_fichierbat)
+											{
+												Remove-Item $chemin_fichierbat -Confirm:$false -Force
+											}
+											New-Item $chemin_fichierbat
+											#$lecteurperso1 = "if exist \\$nom_serveur\$($user.'login') (net use t: \\$nom_serveur\$($user.'login'))"
+											#$lecteurperso2 = "if exist \\$nom_serveur2\$($user.'login') (net use t: \\$nom_serveur2\$($user.'login'))"
+											$lecteurperso = "net use t: %logonserver%\$($user.'login')"
+											Start-Sleep -Milliseconds 500
+											Set-Content -Path $chemin_fichierbat -Value "@echo off"
+											#add-Content -Path $chemin_fichierbat -Value $lecteurperso1 | Out-Null
+											#add-Content -Path $chemin_fichierbat -Value $lecteurperso2 | Out-Null
+											add-Content -Path $chemin_fichierbat -Value $lecteurperso | Out-Null
+											add-Content -Path $chemin_fichierbat -Value 'timeout 5 > NUL'
+											add-Content -Path $chemin_fichierbat -Value 'echo n | gpupdate /target:user /force'
+											
+											set-aduser -Identity $($user.'login') -manager "Importautomatique" -profilepath "$profil_user" -scriptPath $fichierbat -displayname $nom_affiche -description $description_utilisateur -office $classe
+										}
+										
+									}
+									if ($User.'classe' -ne "")
+									{
+										if ($User.'classe' -ne $null)
+										{
+											Add-ADGroupMember -Identity $classe -Members $user.'login'
+											Add-Output -Text "Ajout de l'utilisateur $Username au groupe $classe " -color green # affiche l'attribution du groupe
+											
+											if (-not (test-path "$($new_rep_perso)\classe-$classe.lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$($new_rep_perso)\classe-$classe.lnk")
+												$lnk.TargetPath = "\\$nom_serveur\classe-$classe"
+												$lnk.Save()
+											}
+											$classevr2 = $classe
+											Invoke-Command -Session $s {
+												
+												
+												if (-not (test-path "$($using:new_rep_perso)\classe-$using:classevr2.lnk"))
+												{
+													$objShell = New-Object -ComObject WScript.Shell
+													$lnk = $objShell.CreateShortcut("$($using:new_rep_perso)\classe-$using:classevr2.lnk")
+													$lnk.TargetPath = "\\$using:nom_serveur2\classe-$using:classevr2"
+													$lnk.Save()
+												}
+											}
+											if (-not (test-path "$($path_new_eleves)\$($user.'login').lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$($path_new_eleves)\$($user.'login').lnk")
+												$lnk.TargetPath = "\\$nom_serveur\$($user.'login')"
+												$lnk.Save()
+											}
+											Invoke-Command -Session $s {
+												
+												if (-not (test-path "$($using:path_new_eleves)\$($using:login).lnk"))
+												{
+													$objShell = New-Object -ComObject WScript.Shell
+													$lnk = $objShell.CreateShortcut("$($using:path_new_eleves)\$($using:login).lnk")
+													$lnk.TargetPath = "\\$using:nom_serveur2\$($using:login)"
+													$lnk.Save()
+												}
+											}
+											
+											Get-Item "$($new_rep_perso)\classe-$classe.lnk" | Disable-NTFSAccessInheritance
+											Remove-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Modify, Synchronize
+											Add-NTFSAccess -Path "$($new_rep_perso)\classe-$classe.lnk" -Account $($user.'login') -AccessRights Read, Synchronize
+											Remove-Item "$($new_rep_perso)\classe-$($old_user.'classe').lnk" -Force -Confirm:$false
+											Remove-Item "$($path_old_eleves)\$($user.'login').lnk" -Force -Confirm:$false
+											
+											$logintemp = $($user.'login')
+											$oldclasse = "classe-$($old_user.'classe')"
+											Invoke-Command -Session $s {
+												Get-Item "$($using:new_rep_perso)\classe-$using:classevr2.lnk" | Disable-NTFSAccessInheritance
+												Remove-NTFSAccess -Path "$($using:new_rep_perso)\classe-$using:classevr2.lnk" -Account $($using:logintemp) -AccessRights Modify, Synchronize
+												Add-NTFSAccess -Path "$($using:new_rep_perso)\classe-$using:classevr2.lnk" -Account $($using:logintemp) -AccessRights Read, Synchronize
+												Remove-Item "$($using:new_rep_perso)\$($using:oldclasse).lnk" -Force -Confirm:$false
+												Remove-Item "$($using:path_old_eleves)\$($using:login).lnk" -Force -Confirm:$false
+											}
+										}
+									}
+								}
+								else
+								{
+									
+									if ($($old_user.'manager') -eq "CN=Import Automatique,CN=Users,$OU_base")
+									{
+										
+										$utilisateur_deplace = "1"
+										# On récupère tous les groupes auquel appartient l'utilisateur
+										$groups = get-adprincipalgroupmembership $($old_user.'SamAccountName');
+										
+										
+										#nettoyage des scripts de connexion
+										$chemin_old_fichierbat = "$netlogon$($old_user.'SamAccountName').bat"
+										Move-Item -Path $chemin_old_fichierbat -Destination $rep_ancien_scripts_utilisateur -Force
+										
+										
+										# Boucle sur l'ensemble des groupes
+										foreach ($group in $groups)
+										{
+											
+											# On exclue utilisateurs du domaine
+											if ($group.name -ne "Utilisateurs du domaine")
+											{
+												
+												# On enlève l'utilisateur des groupes listés
+												remove-adgroupmember -Identity $group.name -Members $old_user.'SamAccountName' -Confirm:$false;
+												
+											}
+										}
+										
+										# Déplace l'utilisateur dans l'OU temporaire
+										Move-ADObject -Identity $($old_user.'DistinguishedName') -TargetPath "OU=$OU_TEMP,$OU_base"
+										
+										# enleve l'utilisateur impor auto 
+										Set-ADuser -Identity $($old_user.'SamAccountName') -clear Manager
+										Add-Output -Text "L'utilisateur $($old_user.'SamAccountName') est déplacé dans l'OU temporaire" -Color blue
+										
+										# Suppression du partage  et déplacement dans ancien
+										Remove-SmbShare -Name "$($old_user.'SamAccountName')" -Force
+										$samaccount = $($old_user.'SamAccountName')
+										Invoke-Command -Session $s {
+											Remove-SmbShare -Name $using:samaccount -Force
+										}
+										if ($($old_user.'title') -eq "$nom_professeurs" -or $($old_user.'title') -eq "$nom_administratifs")
+										{
+											$ancienrepperso = "$rep_perso_base\$($old_user.'title')\$($old_user.'SamAccountName')"
+											$nouveaureperso = "$rep_ancien\$($old_user.'title')\"
+										}
+										elseif ($($old_user.'title') -eq "$nom_eleves")
+										{
+											$ancienrepperso = "$rep_perso_base\$nom_eleves\$($old_user.'office')\$($old_user.'SamAccountName')"
+											$nouveaureperso = "$rep_ancien\$nom_eleves\"
+										}
+										
+										Remove-FsrmQuota -Path $ancienrepperso -Confirm:$false
+										if (-not (Test-Path -Path $nouveaureperso))
+										{
+											New-Item -Path $nouveaureperso -ItemType Directory
+										}
+										
+										
+										Move-Item -Path $ancienrepperso -Destination $nouveaureperso -Force
+										Invoke-Command -Session $s {
+											Remove-FsrmQuota -Path $using:ancienrepperso -Confirm:$false
+											if (-not (Test-Path -Path $using:nouveaureperso))
+											{
+												New-Item -Path $using:nouveaureperso -ItemType Directory
+											}
+											Move-Item -Path $using:ancienrepperso -Destination $using:nouveaureperso -Force
+										}
+									}
+									
+									
+									
+									
+									
+									
+								}
+							}
+							
+							# On teste si l'utilisateur à des options et on les attribue
+							if (-not ($old_user.'OPTIONS' -eq $user.'OPTIONS'))
+							{
+								
+								
+								$rep_options_perso = "$new_rep_perso\groupes\"
+								attrib -h $rep_options_perso
+								
+								
+								if (-not ($old_user.'OPTIONS' -eq ""))
+								{
+									if (-not ($old_user.'OPTIONS' -eq $null))
+									{
+										$old_user.'OPTIONS'.Split(",") | ForEach {
+											remove-adgroupmember -Identity $($_) -Members $($user.'login') -Confirm:$false;
+											Remove-Item "$rep_options_perso$_.lnk"
+										}
+									}
+								}
+								if ($User.'Options' -ne "")
+								{
+									if ($User.'Options' -ne $null)
+									{
+										
+										$User.'Options'.Split(",") | ForEach {
+											Add-ADGroupMember -Identity $_ -Members $user.'login'
+											Add-Output -Text "Ajout de l'utilisateur $Username au groupe $_ " -color green # affiche l'attribution du groupe
+											if (-not (Test-Path -Path $rep_options_perso))
+											{
+												New-Item -Path $rep_options_perso -ItemType Directory -Force
+											}
+											attrib -h $rep_options_perso
+											if (-not (test-path "$rep_options_perso$_.lnk"))
+											{
+												$objShell = New-Object -ComObject WScript.Shell
+												$lnk = $objShell.CreateShortcut("$rep_options_perso$_.lnk")
+												$lnk.TargetPath = "\\$nom_serveur\option-$_"
+												$lnk.Save()
+											}
+											$optionsvr2 = $_
+											
+											Invoke-Command -Session $s {
+												if (-not (Test-Path -Path $using:rep_options_perso))
+												{
+													New-Item -Path $using:rep_options_perso -ItemType Directory -Force
+													$Folder = Get-Item  $using:rep_options_perso
+													$Folder.Attributes += 'ReadOnly'
+												}
+												attrib -h $using:rep_options_perso
+												if (-not (test-path "$using:rep_options_perso$using:optionsvr2.lnk"))
+												{
+													$objShell = New-Object -ComObject WScript.Shell
+													$lnk = $objShell.CreateShortcut("$using:rep_options_perso$using:optionsvr2.lnk")
+													$lnk.TargetPath = "\\$using:nom_serveur2\option-$using:optionsvr2"
+													$lnk.Save()
+												}
+											}
+											
+										}
+										attrib -h $rep_options_perso
+										
+										Get-Item $rep_options_perso | Disable-NTFSAccessInheritance
+										Remove-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Modify, Synchronize
+										add-NTFSAccess -path $rep_options_perso -Account $siduser -AccessRights Read
+										
+										
+										Invoke-Command -Session $s {
+											attrib -h $using:rep_options_perso
+											Get-Item $using:rep_options_perso | Disable-NTFSAccessInheritance
+											Remove-NTFSAccess -path $using:rep_options_perso -Account $using:siduser -AccessRights Modify, Synchronize
+											add-NTFSAccess -path $using:rep_options_perso -Account $using:siduser -AccessRights Read
+										}
+									}
+									set-aduser -Identity $Username -streetAddress $($user.'options')
+									
+								}
+								else
+								{
+									
+									Get-ADUser $Username | Set-ADUser -Clear streetAddress
+									#set-aduser -Identity $Username -streetAddress $null
+								}
+								
+							}
+						
+						}
+					}
+					$progressbarimportation.PerformStep()
+				}
+				
+			}
+		}
+		catch
+		{
+			$err = $_.Exception.Message
+			Write-Host "$err"
+		}
+		
+	}
+	
+	
+	Add-Output -Text "ETAPE 5 NETTOYAGE DE LA BASE" -header
+	
+	#Nettoyage des comptes
+	
+	#-------------------------------
+	# GROUPES
+	#-------------------------------
+	
+	# Cherche les groupes vides dans une OU spécifique
+	
+	
+	# Exporte le résultat dans un CSV
+	
+	
+	$Groupes_vides = Get-ADGroup -Filter { Members -notlike "*" } -SearchBase $OU_groupe | Where-Object { ($_.distinguishedname -like "*,OU=options,*") -OR ($_.distinguishedname -like "*,OU=classes,*") -OR ($_.distinguishedname -like "*,OU=matieres,*") } | Select-Object Name, GroupCategory, DistinguishedName
+	
+	if ($Groupes_vides -ne $null)
+	{
+		$Groupes_vides | Export-Csv $sauve_nettoyage_groupe -NoTypeInformation -Encoding UTF8
+		
+		$groupe_nettoye = "1"
+		# Supprime les groupes vides
+		ForEach ($Item in $Groupes_vides)
+		{ [System.Windows.Forms.Application]::DoEvents()
+			if ($groupe_base_ckeck.Contains($($Item.Name)) -eq $false)
+			{
+				if (-not ($OU_groupe_machines -eq $Item.DistinguishedName))
+				{
+					$groupenettoyeDN = $($Item.DistinguishedName)
+					$groupenettoye = $($Item.Name)
+					Set-ADObject -identity $item.DistinguishedName -ProtectedFromAccidentalDeletion:$false -PassThru
+					Remove-ADGroup -Identity $Item.DistinguishedName -Confirm:$false
+					Add-Output -Text "Le groupe $groupenettoye est vide : suppression" -color magenta
+				}
+				
+				if ($groupenettoyeDN -like "*$OU_groupe_options")
+				{
+					$Path = "$rep_options\$groupenettoye"
+					$pathbackup = "$rep_ancien\options\"
+					if (Get-SMBShare -Name "Option-$groupenettoye" -ea 0)
+					{
+						Remove-SmbShare -Name "Option-$groupenettoye" -Force
+					}
+					
+					if (Test-Path -Path $Path)
+					{
+						if (-not (Test-Path -Path $pathbackup))
+						{
+							New-Item -Path $pathbackup -ItemType Directory
+						}
+						Move-Item -Path $Path -Destination "$pathbackup" -Force
+					}
+					if (-not ($s -eq "vide"))
+					{
+						Invoke-Command -Session $s {
+							if (Get-SMBShare -Name "Option-$using:groupenettoye" -ea 0)
+							{
+								Remove-SmbShare -Name "Option-$using:groupenettoye" -Force
+							}
+							if (Test-Path -Path $using:Path)
+							{
+								if (-not (Test-Path -Path $using:pathbackup))
+								{
+									New-Item -Path $using:pathbackup -ItemType Directory
+								}
+								Move-Item -Path $using:Path -Destination "$using:pathbackup" -Force
+							}
+							
+						}
+					}
+					
+				}
+				if ($groupenettoyeDN -like "*$OU_groupe_matieres")
+				{
+					$Path = "$rep_matieres\$groupenettoye"
+					$pathbackup = "$rep_ancien\matieres\"
+					if (Get-SMBShare -Name "matiere-$groupenettoye" -ea 0)
+					{
+						Remove-SmbShare -Name "matiere-$groupenettoye" -Force
+					}
+					if (Test-Path -Path $Path)
+					{
+						if (-not (Test-Path -Path $pathbackup))
+						{
+							New-Item -Path $pathbackup -ItemType Directory
+						}
+						Move-Item -Path $Path -Destination "$pathbackup\$groupenettoye" -Force
+					}
+					if (-not ($s -eq "vide"))
+					{
+						Invoke-Command -Session $s {
+							if (Get-SMBShare -Name "matiere-$groupenettoye" -ea 0)
+							{
+								Remove-SmbShare -Name "matiere-$using:groupenettoye" -Force
+							}
+							if (Test-Path -Path $using:Path)
+							{
+								if (-not (Test-Path -Path $using:pathbackup))
+								{
+									New-Item -Path $using:pathbackup -ItemType Directory
+								}
+								Move-Item -Path $using:Path -Destination "$using:pathbackup" -Force
+							}
+							
+						}
+					}
+				}
+				
+			}
+		}
+	}
+	
+	if (-not ($groupe_nettoye -eq "1"))
+	{
+		Add-Output -Text "Aucun groupe vide rien à faire" -color green
+	}
+	
+	#-------------------------------
+	# OU
+	#-------------------------------
+	
+	# Cherche les OU vides
+	
+	
+	# Exporte le résultat dans un CSV
+	
+	$OU_vides = Get-ADOrganizationalUnit -Filter * -SearchBase $OU_utilisateur_base | Where-Object { -not (Get-ADObject -Filter * -SearchBase $_.Distinguishedname -SearchScope OneLevel -ResultSetSize 1) }
+	
+	if ($OU_vides -ne $null)
+	{
+		$OU_vides | Export-Csv $sauve_nettoyage_ou -NoTypeInformation -Encoding UTF8
+		$OU_nettoye = "1"
+		
+		# Supprime les OU vides
+		ForEach ($Item in $OU_vides)
+		{ [System.Windows.Forms.Application]::DoEvents()
+			$OUnettoyeDN = $($Item.DistinguishedName)
+			$OUnettoye = $($Item.Name)
+			if ($groupe_base_ckeck.Contains($($Item.Name)) -eq $false)
+			{
+				Set-ADObject -identity $item.DistinguishedName -ProtectedFromAccidentalDeletion:$false -PassThru
+				Remove-ADOrganizationalUnit -Identity $Item.DistinguishedName -Confirm:$false
+				Add-Output -Text "L'OU $($Item.Name) est vide : suppression" -color magenta
+				if ($OUnettoyeDN -like "*$ou_utilisateur_base_eleve")
+				{
+					$Path = "$rep_perso_base\eleves\$OUnettoye"
+					$pathbackup = "$rep_ancien\classes\$OUnettoye"
+					if (Test-Path -Path $Path)
+					{
+						if (-not (Test-Path -Path $pathbackup))
+						{
+							New-Item -Path $pathbackup -ItemType Directory
+						}
+						if (Get-SMBShare -Name "classe-$OUnettoye" -ea 0)
+						{
+							Remove-SmbShare -Name "classe-$OUnettoye" -Force
+						}
+						Move-Item -Path $Path -Destination "$pathbackup" -Force
+					}
+					if (-not ($s -eq "vide"))
+					{
+						Invoke-Command -Session $s {
+							if (Get-SMBShare -Name "classe-$using:OUnettoye" -ea 0)
+							{
+								Remove-SmbShare -Name "classe-$using:OUnettoye" -Force
+							}
+							if (Test-Path -Path $using:path)
+							{
+								if (-not (Test-Path -Path $using:pathbackup))
+								{
+									New-Item -Path $using:pathbackup -ItemType Directory
+								}
+								Move-Item -Path $using:Path -Destination $using:pathbackup -Force
+							}
+						}
+					}
+					
+				}
+				
+			}
+		}
+	}
+	
+	if (-not ($OU_nettoye -eq "1"))
+	{
+		Add-Output -Text "Aucune OU vide rien à faire" -color green
+	}
+	
+	
+	
+	Add-Output -Text "ETAPE 6 GENERATION DES FICHIERS DE CLASSE" -header
+	
+	
+	
+	
+	if ($s -eq "vide")
+	{
+		
+		$deuxserveurs = $false
+		GenererFichiersClasses $deuxserveurs
+	}
+	else
+	{
+		$deuxserveurs = $true
+		GenererFichiersClasses $deuxserveurs
+		
+	}
+	Add-Output -Text "Fichiers de classe générés avec succès." -color green
+	
+	
+	Remove-Variable * -ErrorAction SilentlyContinue
+	
+	Stop-Transcript
+	
+	[System.Windows.Forms.MessageBox]::Show("Fin de l'importation des comptes", "Information", 'OK')
+	$statusLabelVar.Text = "Fin de l'importation des comptes Pronote"
+}
+
+
+function parsecsv
+{
+	#Declaration des variables#
+	
+	param (
+		
+		[Parameter(Mandatory = $true, Position = 0)]
+		[string]$fichierprof,
+		[Parameter(Mandatory = $true, Position = 1)]
+		[string]$fichiereleve
+		
+	)
+	
+	
+	#Declaration des variables#
+	
+	$pathCSVEleves = $pathRacine + "ImportationEleves.csv"
+	$pathCSVProfs = $pathRacine + "ImportationProfsAdmin.csv"
+	Add-Output -Text "ETAPE 1 RECHERCHE ENCODAGE DES FICHIERS ET CONVERSION" -Header
+	(Get-Content -Path $fichiereleve) | ForEach-Object { ($_ -Replace 'DATE NAISS', 'DATE_NAISS') } | Set-Content -Path $fichiereleve
+	$encodage_eleve = (Get-FileEncoding $fichiereleve).bodyname
+	$encodage_prof = (Get-FileEncoding $fichierprof).bodyname
+	
+	Add-Output -Text "Fichier élève encodage en $encodage_eleve" -Color Blue
+	Add-Output -Text "Fichier prof encodage en $encodage_prof" -Color Blue
+	
+	if ($encodage_eleve -eq "utf-8")
+	{
+		$encodage_eleve_corrige = "UTF8"
+	}
+	elseif ($encodage_eleve -eq "utf-7")
+	{
+		$encodage_eleve_corrige = "UTF7"
+		
+	}
+	if ($encodage_prof -eq "utf-8")
+	{
+		$encodage_prof_corrige = "UTF8"
+	}
+	elseif ($encodage_prof -eq "utf-7")
+	{
+		$encodage_prof_corrige = "UTF7"
+		
+	}
+	
+	
+	$csvprof = Import-Csv -LiteralPath "$fichierprof" -Delimiter ";" -Encoding $encodage_prof_corrige
+	$csveleve = Import-Csv -LiteralPath "$fichiereleve" -Delimiter ";" -Encoding $encodage_eleve_corrige
+	
+	$logFile = $ScriptDirectory + "\ImportationLog.txt"
+	
+	
+	$i = 0
+	$line = ""
+	$login = ""
+	$ofs = ","
+	$arrayLogin = New-Object -TypeName 'System.Collections.ArrayList'
+	$arrayLogin.Add("0")
+	$arrayOptions = New-Object -TypeName 'System.Collections.ArrayList'
+	
+	
+	#Variables count des utilisateurs#
+	
+	[int]$countEleves = 0
+	$reader = New-Object IO.StreamReader $fichiereleve
+	while ($reader.ReadLine() -ne $null) { $countEleves++ }
+	
+	[int]$countEns = 0
+	$reader = New-Object IO.StreamReader $fichierprof
+	while ($reader.ReadLine() -ne $null) { $countEns++ }
+	
+	
+	$counttotal = $countEns + $countEleves
+	$progressbarconversionfichier.Maximum = $counttotal
+	
+	Log("start")
+	
+	
+	New-Item -ItemType File -Path $pathCSVEleves -Force
+	Add-Content -Path $pathCSVEleves -Value "PRENOM;NOM;DATE NAISSANCE;LOGIN;GROUPE;CLASSE;OPTIONS;MOT DE PASSE;" -Encoding UTF8
+	
+	Log("startEleve")
+	#Parse du Node Eleve#
+	foreach ($user in $csveleve)
+	{
+		$classe = $user.'classes'
+		if ($classe -ne $null)
+		{
+			if ($classe -ne "")
+			{
+			
+			[System.Windows.Forms.Application]::DoEvents()
+			#Traitement prenoms et noms composes#
+			$prenom = RemoveSpecialCaracters($user.'PRENOM')
+			$nom = RemoveSpecialCaracters($user.'NOM')
+			
+			if ($user.'DATE_NAISS' -eq "")
+			{
+				$date_naiss = Get-Date -Format "dd/MM/yyyy"
+			}
+			else
+			{
+				$date_naiss = $user.'DATE_NAISS'
+			}
+			$login = SetLogin $prenom $nom $arrayLogin
+			
+			$groupes = $user.'GROUPES'
+			$groupes = Remove-StringLatinCharacters $groupes
+				$groupes = CleanGroupName -groupes $groupes
+<#			if ($groupes -ne $null)
+			{
+				$groupes = $groupes.replace(' ', '')
+				$groupes = $groupes.replace('_', '')
+				$groupes = $groupes.replace('.', '')
+				$groupes = $groupes.replace('(', '')
+				$groupes = $groupes.replace(')', '')
+				$groupes = $groupes.replace('/', '')
+				$groupes = $groupes.replace('+', '')
+				$groupes = $groupes.replace('.', '')
+				$groupes = $groupes.replace('°', '')
+			}#>
+			$classe = $user.'classes'
+			$classe = $classe.replace(' ', '')
+			
+			if ($classe -eq "Extérieurs")
+			{
+				$classe = "Extérieurs-Eleve"
+			}
+			#Creation de la ligne CSV#
+			$line = $user.'PRENOM' + ";" + $user.'NOM' + ";" + $date_naiss + ";" + $login + ";" + "eleves" + ";" + $classe + ";" + $groupes + ";" + $date_naiss + ";"
+			
+			#Ajout du login pour verification homonyme#
+			$arrayLogin.Add($login)
+			
+			#Ajout de la ligne complete dans le fichier ElevesSansAdresses.csv#
+			Add-Content -Path $pathCSVEleves -Value $line -Encoding UTF8
+		}
+	}
+		$progressbarconversionfichier.PerformStep()
+	}
+	
+	
+	Log("eleve")
+	
+	New-Item -ItemType File -Path $pathCSVProfs -Force
+	Add-Content -Path $pathCSVProfs -Value "PRENOM;NOM;DATE NAISSANCE;LOGIN;GROUPE;CLASSE;OPTIONS;MOT DE PASSE;MATIERE;" -Encoding UTF8
+	
+	Log("startEns")
+	
+	foreach ($user in $csvprof)
+	{
+		[System.Windows.Forms.Application]::DoEvents()
+		if (($user.'nom' -ne "") -and ($user.'prenom' -ne ""))
+		{
+			if ($user.'DATE_NAISS' -eq "")
+			{
+				$date_naiss = Get-Date -Format "dd/MM/yyyy"
+			}
+			else
+			{
+				$date_naiss = $user.'DATE_NAISS'
+			}
+			
+			
+			$matiere = $user.'DISCIPLINE'
+			if ($matiere -ne $null)
+			{
+				if ($matiere -ne "")
+				{
+					
+					#$matiere = $matiere.replace(' ', '')
+					#$matiere = $matiere.replace('.', '')
+					# Supression du dernier point sur les matieres si présent #	
+					$matierefinestunpoint = $matiere.Substring($matiere.Length - 1, 1)
+					
+					if ($matierefinestunpoint -eq ".")
+					{
+						$matiere = $matiere.Substring(0, $matiere.Length - 1)
+					}
+				}
+			}
+			
+			
+
+			
+			$groupes = $user.'GROUPES'
+			$groupes = Remove-StringLatinCharacters $groupes
+			$groupes = CleanGroupName -groupes $groupes
+<#			if ($groupes -ne $null)
+			{
+				$groupes = $groupes.replace(' ', '')
+				$groupes = $groupes.replace('_', '')
+				$groupes = $groupes.replace('.', '')
+				$groupes = $groupes.replace('(', '')
+				$groupes = $groupes.replace(')', '')
+				$groupes = $groupes.replace('/', '')
+				$groupes = $groupes.replace('+', '')
+				$groupes = $groupes.replace('.', '')
+				$groupes = $groupes.replace('°', '')
+			}#>
+			
+			$classe = $user.'classes'
+			if ($classes -ne $null)
+			{
+				$classes = $classes.Replace(' ', '')
+			}
+			
+			#Traitement prenoms et noms composes#
+			$prenom = RemoveSpecialCaracters($user.'PRENOM')
+			$nom = RemoveSpecialCaracters($user.'NOM')
+			$login = SetLogin $prenom $nom $arrayLogin
+			
+			
+			#Creation de la ligne CSV#
+			$line = $user.'PRENOM' + ";" + $user.'NOM' + ";" + $dateNaissance + ";" + $login + ";" + "professeurs" + ";" + $classes + ";" + $groupes + ";" + $dateNaissance + ";" + $matiere + ";"
+			
+			#Ajout du login pour verification homonyme#
+			$arrayLogin.Add($login)
+			
+			#Ajout de la ligne complete dans le fichier ElevesSansAdresses.csv#
+			Add-Content -Path $pathCSVProfs -Value $line -Encoding UTF8
+			$progressbarconversionfichier.PerformStep()
+		}
+		
+		#RemoveXML
+		Log("end")
+		
+		
+		
+	}
+}
+
+
+
+Function Log($string)
+{
+	$date = (Get-Date).ToString()
+	$logMessage = $date + " - "
+	switch ($string)
+	{
+		"start" { $logMessage = "`r`n##############################################`r`n# DEBUT DE IMPORTATION A $date #`r`n##############################################`r`n" }
+		"startEleve" { $logMessage = $logMessage + "Debut de importation des $countEleves eleves" }
+		"eleve" { $logMessage = $logMessage + "Fin de importation des eleves" }
+		"startEns" { $logMessage = $logMessage + "Debut de importation des $countEns enseignants" }
+		"ens" { $logMessage = $logMessage + "Fin de importation des enseignants" }
+		"startAdm" { $logMessage = $logMessage + "Debut de importation des $countAdm administratifs" }
+		"adm" { $logMessage = $logMessage + "Fin de importation des administratifs" }
+		"end" { $logMessage = "`r`n##############################################`r`n#  FIN DE IMPORTATION A $date  #`r`n##############################################" }
+		default { $logMessage = $logMessage + "Une erreur est survenue : " + $string }
+	}
+	
+	$logMessage >> $logFile
+}
+
+
+
+$formImportationPronoteEl_Load = {
+	#TODO: Initialize Form Controls here
+	$buttonImportation.Visible = $false
+	$progressbarimportation.Visible = $false
+	$progressbarconversionfichier.Visible = $false
+	$progressbarancienuser.Visible = $false
+	$labelDéplacementDesAncien.Visible = $false
+	$richtextboxretourimport.Text = ""
+	$labelImportationDesCompte.visible = $false
+	$labelconversioncsv.Visible = $false
+	$labelCréationDesOU.Visible = $false
+	$progressbarOU.Visible = $false
+}
+
+
+$buttonFichierEleve_Click = {
+	#TODO: Place custom script here
+	if ($global:repertoire_initial -eq "")
+	{
+		$global:repertoire_initial = $ScriptDirectory
+	}
+	try
+	{
+		$fichier_csv_eleves = selection_fichier_csv  $global:repertoire_initial
+	}
+	catch { }
+	$textboxcheminfichiereleve.Text = $fichier_csv_eleves
+	if (-not ($textboxcheminfichierprof.Text -eq ""))
+	{
+		$buttonImportation.Visible = $true
+		
+	}
+}
+
+$buttonFichierNomenclature_Click = {
+	#TODO: Place custom script here
+	$fichier_nomenclature = selection_fichier_csv  $ScriptDirectory
+	$textboxcheminfichiernomenclature.Text = $fichier_nomenclature
+}
+
+
+
+
+Function Add-Output
+{
+	Param (
+		[parameter(Mandatory)]
+		[String]$Text,
+		[ValidateSet('Green', 'Red', 'Black', 'Blue', 'Magenta')]
+		[String]$Color,
+		[Switch]$Header
+	)
+	$C = Switch ($Color)
+	{
+		'Green'  { 'Green' }
+		'Red'    { 'Red' }
+		'Black'  { 'Black' }
+		'Blue'  { 'Blue' }
+		'Magenta'  { 'Magenta' }
+		Default { 'Black' }
+	}
+	if ($Header)
+	{
+		$Text = $Text + "`n" + ('_' * ($Text.Length - 1))
+		
+		$oldFont = $richtextboxretourimport.Font
+		$richtextboxretourimport.SelectionFont = New-Object Drawing.Font($oldFont.FontFamily, $oldFont.Size, [Drawing.FontStyle]::Bold)
+		$richtextboxretourimport.SelectionColor = "Red"
+		$richtextboxretourimport.AppendText("`n`n$Text`n")
+	}
+	else
+	{
+		$oldFont = $richtextboxretourimport.Font
+		$richtextboxretourimport.SelectionFont = New-Object Drawing.Font($oldFont.FontFamily, $oldFont.Size, [Drawing.FontStyle]::Regular)
+		$richtextboxretourimport.SelectionColor = "$C"
+		$richtextboxretourimport.AppendText("`n$Text`n")
+	}
+}
+
+
+$buttonImportation_Click = {
+	#TODO: Place custom script here
+
+	$richtextboxretourimport.Clear()
+	[string]$nom_serveur = (Get-ItemProperty 'HKLM:\Software\EannaAD\utilisateurAD\' | Get-ItemProperty -Name nom_serveur -ErrorAction SilentlyContinue).nom_serveur
+	[string]$nom_serveur2 = (Get-ItemProperty 'HKLM:\Software\EannaAD\utilisateurAD\' | Get-ItemProperty -Name nom_serveur2 -ErrorAction SilentlyContinue).nom_serveur2
+	if ($nom_serveur2 -ne "")
+	{
+		$serveurencours = $env:computername
+		$fqdnserveur1 = "$($nom_serveur).$domaine"
+		$fqdnserveur2 = "$($nom_serveur2).$domaine"
+		if ($serveurencours -eq $nom_serveur)
+		{
+			$s = New-PSSession -ComputerName $fqdnserveur2
+		}
+		elseif ($serveurencours -eq $nom_serveur2)
+		{
+			$s = New-PSSession -ComputerName $fqdnserveur1
+		}
+	}
+	else
+	{
+		$s = "vide"
+	}
+	
+
+	
+	
+	# Charger le contenu du fichier CSV des élèves dans un objet PowerShell
+	$objetCsvEleves = Import-Csv -Path $textboxcheminfichiereleve.Text
+	
+	# Compter le nombre d'élèves dans le fichier CSV (en soustrayant 1 pour l'en-tête)
+	$nombreEleves = $objetCsvEleves.Count - 1
+	
+	# Charger le contenu du fichier CSV des professeurs dans un objet PowerShell
+	$objetCsvProfesseurs = Import-Csv -Path $textboxcheminfichierprof.Text
+	
+	# Compter le nombre de professeurs dans le fichier CSV (en soustrayant 1 pour l'en-tête)
+	$nombreProfesseurs = $objetCsvProfesseurs.Count - 1
+	
+	# Lire le nombre d'utilisateurs présents
+	$nombreProfesseursPresents = (Get-ADGroupMember "professeurs").Count
+	$nombreElevesPresents = (Get-ADGroupMember "eleves").Count
+	
+	# Vérifier les conditions et demander confirmation de l'utilisateur si nécessaire
+	if ($nombreEleves -lt ($nombreElevesPresents - 50))
+	{
+		$message = "Il y a $nombreElevesPresents élèves actuellement présents et $nombreEleves élèves dans le fichier d'import, le fichier csv ne semble pas bon êtes vous sur de vouloir continuer ?"
+		$caption = "Confirmation"
+		$icon = [System.Windows.Forms.MessageBoxIcon]::Exclamation
+		$buttons = [System.Windows.Forms.MessageBoxButtons]::YesNo
+		
+		$result = [System.Windows.Forms.MessageBox]::Show($message, $caption, $buttons, $icon)
+		
+		if ($result -ne [System.Windows.Forms.DialogResult]::Yes)
+		{
+			return
+		}
+	}
+	
+	if ($nombreProfesseurs -lt ($nombreProfesseursPresents - 20))
+	{
+		$message = "Il y a $nombreProfesseursPresents professeurs actuellement présents et $nombreProfesseurs professeurs dans le fichier d'import, le fichier csv ne semble pas bon êtes vous sur de vouloir continuer ?"
+		$caption = "Confirmation"
+		$icon = [System.Windows.Forms.MessageBoxIcon]::Exclamation
+		$buttons = [System.Windows.Forms.MessageBoxButtons]::YesNo
+		
+		$result = [System.Windows.Forms.MessageBox]::Show($message, $caption, $buttons, $icon)
+		
+		if ($result -ne [System.Windows.Forms.DialogResult]::Yes)
+		{
+			return
+		}
+	}
+	
+	
+	$progressbarancienuser.Value = 0
+	$progressbarOU.Value = 0
+	$progressbarimportation.Value = 0
+	parsecsv -fichiereleve $textboxcheminfichiereleve.Text -fichierprof $textboxcheminfichierprof.Text
+	$pathCSV = $chemin_appli + "\ImportationEleves.csv"
+	deplacementuser -fichiercsv $pathCSV -session $s
+	creationOU -fichiercsvconverti $pathCSV
+	importationcsv -fichiercsv $pathCSV -session $s
+	$statusLabelVar.text = "Importation des comptes élèves terminéé"
+	#[System.Windows.Forms.MessageBox]::Show("Info: Importation terminée", "Information")
+}
+
+
+$buttonFichierProf_Click = {
+	#TODO: Place custom script here
+	if ($global:repertoire_initial -eq "")
+	{
+		$global:repertoire_initial = $ScriptDirectory
+	}
+	try
+	{
+		$fichier_csv_prof = selection_fichier_csv  $global:repertoire_initial
+	}
+	catch { }
+	$textboxcheminfichierprof.text = $fichier_csv_prof
+	if (-not ($textboxcheminfichiereleve.Text -eq ""))
+	{
+		$buttonImportation.Visible = $true
+		
+	}
+}
+
+
+
+Function RemoveSpecialCaracters($string)
+{
+	$string = Remove-StringLatinCharacters($string)
+	$string = $string.ToLower()
+	$string = ($string -split ('-'))[0]
+	$string = ($string -split (' '))[0]
+	$string = $string -replace '[^a-z]'
+	
+	return $string
+}
+
+
+
+
+
+$textbox1_TextChanged = {
+	#TODO: Place custom script here
+	
+}
+
+$textboxcheminfichierprof_TextChanged = {
+	#TODO: Place custom script here
+	
+}
+
+$textboxcheminfichiereleve_TextChanged = {
+	#TODO: Place custom script here
+	
+}
